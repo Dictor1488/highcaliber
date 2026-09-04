@@ -5,7 +5,6 @@ html, body {
   height: 100%;
   overflow: hidden;
   background: transparent;
-  pointer-events: none;
 }
 
 #root {
@@ -19,9 +18,8 @@ html, body {
   justify-content: flex-start;
   box-sizing: border-box;
   transform-origin: top left;
-  pointer-events: none;
   background: transparent;
-  will-change: left, top, transform;
+  will-change: transform;
 }
 
 #root.hidden {
@@ -61,5 +59,4 @@ html, body {
     inset 0 0 0 1px rgba(0, 0, 0, .55),
     0 0 3px rgba(0, 0, 0, .65);
   cursor: move;
-  pointer-events: auto;
 }
