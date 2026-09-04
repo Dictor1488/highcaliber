@@ -1,0 +1,75 @@
+name: Build me.inq.highcaliber.wotmod
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version (leave empty for automatic)"
+        required: false
+        default: "0.1.0"
+
+concurrency:
+  group: highcaliber-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3 for builder
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate sources
+        run: |
+          node --check resources/in/gui/gameface/mods/highcaliber/HighCaliber/HighCaliber.js
+          python -m json.tool build.json >/dev/null
+          python -m json.tool resources/in/mods/configs/res_map/highcaliber_gameface.json >/dev/null
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="0.0.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+
+      - name: Build me.inq.highcaliber.wotmod
+        run: |
+          python build.py --version "$VERSION"
+          echo "Built files:"
+          ls -la build
+          BUILT_FILE="$(find build -maxdepth 1 -type f -name '*.wotmod' | head -n 1)"
+          if [ -z "$BUILT_FILE" ]; then
+            echo "No .wotmod file was created"
+            exit 1
+          fi
+          if [ "$BUILT_FILE" != "build/me.inq.highcaliber.wotmod" ]; then
+            mv "$BUILT_FILE" build/me.inq.highcaliber.wotmod
+          fi
+          test -f build/me.inq.highcaliber.wotmod
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: me.inq.highcaliber.wotmod
+          path: build/me.inq.highcaliber.wotmod
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: INQ High Caliber ${{ env.TAG }}
+          body: |
+            Manual build of INQ High Caliber from commit ${{ github.sha }}.
+          files: build/me.inq.highcaliber.wotmod
+          fail_on_unmatched_files: true
