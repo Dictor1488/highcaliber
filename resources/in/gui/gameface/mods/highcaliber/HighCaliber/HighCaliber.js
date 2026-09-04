@@ -8,6 +8,9 @@
     var lastPayload = null;
     var lastSize = null;
     var timer = null;
+    var dragging = false;
+    var lastX = 0;
+    var lastY = 0;
 
     function num(v, d) {
         v = Number(v);
@@ -58,7 +61,8 @@
             return;
         }
 
-        root.className = '';
+        root.className = cfg.editing === true ? 'editing' : '';
+        root.style.pointerEvents = cfg.editing === true && cfg.dragEnabled !== false ? 'auto' : 'none';
         resize(cfg.scale);
 
         var status = String(cfg.status || 'progress');
@@ -74,6 +78,50 @@
         }
     }
 
+    function sendDrag(dx, dy, final) {
+        try {
+            if (window.model && typeof window.model.onDragged === 'function') {
+                window.model.onDragged({
+                    dx: dx,
+                    dy: dy,
+                    final: final === true,
+                    gameScale: gameUiScale()
+                });
+            }
+        } catch (e) {}
+    }
+
+    function pointerX(e) { return typeof e.screenX === 'number' ? e.screenX : e.clientX; }
+    function pointerY(e) { return typeof e.screenY === 'number' ? e.screenY : e.clientY; }
+
+    function onMouseDown(e) {
+        if (!root || root.className.indexOf('editing') < 0) return;
+        if (e.button !== 0) return;
+        dragging = true;
+        lastX = pointerX(e);
+        lastY = pointerY(e);
+        e.preventDefault();
+    }
+
+    function onMouseMove(e) {
+        if (!dragging) return;
+        var px = pointerX(e);
+        var py = pointerY(e);
+        var dx = px - lastX;
+        var dy = py - lastY;
+        lastX = px;
+        lastY = py;
+        if (dx || dy) sendDrag(dx, dy, false);
+        e.preventDefault();
+    }
+
+    function onMouseUp(e) {
+        if (!dragging) return;
+        dragging = false;
+        sendDrag(0, 0, true);
+        e.preventDefault();
+    }
+
     function tick() {
         var raw = window.model && window.model.payload ? String(window.model.payload) : '';
         if (raw === lastPayload) return;
@@ -84,6 +132,9 @@
     }
 
     function initialize() {
+        if (root) root.addEventListener('mousedown', onMouseDown);
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
         tick();
         window.setTimeout(tick, 100);
         window.setTimeout(tick, 500);
@@ -109,6 +160,8 @@
                 status: 'progress',
                 remaining: 2137,
                 scale: 1,
+                dragEnabled: true,
+                editing: true,
                 colorProgress: '#F8F400',
                 colorDone: '#60FF00',
                 colorWasted: '#FE0E00',
