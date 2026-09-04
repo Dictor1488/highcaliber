@@ -236,7 +236,7 @@
             window.engine.on('self.onScaleUpdated', function () { lastSurfaceSize = null; tick(); });
             window.engine.on('clientResized', function () { lastSurfaceSize = null; tick(); });
         }
-        if (!timer) timer = window.setInterval(tick, 250);
+        if (!timer) timer = window.setInterval(tick, 16);
     }
 
     if (window.engine && window.engine.whenReady) {
