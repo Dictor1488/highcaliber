@@ -20,9 +20,9 @@ from Avatar import PlayerAvatar
 from BattleFeedbackCommon import BATTLE_EVENT_TYPE
 from constants import VEHICLE_HIT_FLAGS
 from frameworks.wulf import ViewModel, ViewSettings, ViewFlags, WindowFlags, WindowLayer, WindowStatus
+from gui.battle_control.controllers import feedback_events
+from gui.battle_control.controllers.battle_field_ctrl import BattleFieldCtrl, IBattleFieldListener
 from gui.impl.pub import ViewImpl, WindowImpl
-from gui.battle_control.controllers import battle_field_ctrl, feedback_events
-from gui.battle_control.controllers.battle_field_ctrl import IBattleFieldListener
 from helpers import dependency, getClientLanguage
 from skeletons.gui.impl import IGuiLoader
 
@@ -33,11 +33,12 @@ except Exception:
     ModDynAccessor = None
     _OPENWG_OK = False
 
-
-__version__ = '0.1.0'
-_logger = logging.getLogger('[INQHighCaliber]')
-
+MOD_ID = 'me.inq.highcaliber'
+MOD_VERSION = '0.1.0'
 RES_MAP_ITEM_ID = 'mods/highcaliber/HighCaliberBattle/layoutID'
+
+_logger = logging.getLogger('INQHighCaliber')
+
 _CONFIG_DIR = os.path.join('mods', 'configs', 'highcaliber')
 _CONFIG_PATH = os.path.join(_CONFIG_DIR, 'settings.json')
 _DEFAULT_CONFIG = {
@@ -52,117 +53,93 @@ _DEFAULT_CONFIG = {
     'colorDone': '#60FF00',
     'colorWasted': '#FE0E00'
 }
-_CONFIG = dict(_DEFAULT_CONFIG)
 
-_listener = None
-_current_ctrl = None
-_orig_setViewComponents = None
-_orig_stopControl = None
-_orig_onBattleEvents = None
-_orig_showShotResults = None
-
-
-def _safe_int(value, default=0):
-    try:
-        return int(value)
-    except Exception:
-        return default
-
-
-def _safe_float(value, default=0.0):
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-_STATUS_TEXTS = {
-    'en': (u'Done!', u'Wasted!'),
+_LOCALIZATION = {
+    'en': ('Done!', 'Wasted!'),
     'ru': (u'Готово!', u'Потеряно!'),
     'uk': (u'Готово!', u'Втрачено!'),
     'ua': (u'Готово!', u'Втрачено!'),
-    'de': (u'Geschafft!', u'Verwirkt!'),
+    'de': ('Geschafft!', 'Verwirkt!'),
     'pl': (u'Gotowe!', u'Utracone!'),
     'cs': (u'Hotovo!', u'Ztraceno!'),
     'sk': (u'Hotovo!', u'Stratené!'),
-    'fr': (u'Terminé !', u'Perdu !'),
+    'fr': (u'Fait !', u'Perdu !'),
     'es': (u'¡Hecho!', u'¡Perdido!'),
-    'it': (u'Fatto!', u'Perso!'),
-    'pt': (u'Concluído!', u'Perdido!'),
-    'pt_br': (u'Concluído!', u'Perdido!'),
+    'it': ('Fatto!', 'Perso!'),
+    'pt': ('Feito!', 'Perdido!'),
+    'pt_br': ('Feito!', 'Perdido!'),
     'tr': (u'Tamam!', u'Kaybedildi!'),
     'hu': (u'Kész!', u'Elveszett!'),
-    'ro': (u'Gata!', u'Pierdut!'),
+    'ro': ('Gata!', 'Pierdut!'),
     'bg': (u'Готово!', u'Загубено!'),
     'sr': (u'Готово!', u'Изгубљено!'),
-    'hr': (u'Gotovo!', u'Izgubljeno!'),
-    'sl': (u'Končano!', u'Izgubljeno!'),
-    'nl': (u'Klaar!', u'Verloren!'),
-    'sv': (u'Klart!', u'Förlorad!'),
-    'no': (u'Ferdig!', u'Tapt!'),
-    'da': (u'Færdig!', u'Tabt!'),
-    'fi': (u'Valmis!', u'Menetetty!'),
+    'hr': ('Gotovo!', 'Izgubljeno!'),
+    'sl': ('Končano!', 'Izgubljeno!'),
+    'nl': ('Klaar!', 'Verloren!'),
+    'sv': ('Klart!', 'Förlorat!'),
+    'no': ('Ferdig!', 'Tapt!'),
+    'da': ('Færdig!', 'Tabt!'),
+    'fi': ('Valmis!', 'Menetetty!'),
     'el': (u'Έτοιμο!', u'Χάθηκε!'),
-    'et': (u'Valmis!', u'Kaotatud!'),
-    'lv': (u'Gatavs!', u'Zaudēts!'),
-    'lt': (u'Baigta!', u'Prarasta!'),
-    'zh': (u'完成！', u'已失效！'),
-    'zh_cn': (u'完成！', u'已失效！'),
-    'zh_tw': (u'完成！', u'已失效！'),
-    'ja': (u'達成！', u'失効！'),
-    'ko': (u'완료!', u'상실!'),
-    'th': (u'สำเร็จ!', u'เสียสิทธิ์!'),
-    'vi': (u'Hoàn tất!', u'Đã mất!')
+    'et': ('Valmis!', 'Kaotatud!'),
+    'lv': ('Gatavs!', 'Zaudēts!'),
+    'lt': ('Baigta!', 'Prarasta!'),
+    'zh_cn': (u'完成!', u'已失去!'),
+    'zh_tw': (u'完成!', u'已失去!'),
+    'ja': (u'完了!', u'失敗!'),
+    'ko': (u'완료!', u'실패!'),
+    'th': (u'สำเร็จ!', u'พลาด!'),
+    'vi': (u'Xong!', u'Mất!')
 }
 
 
-def _client_language():
-    try:
-        language = unicode(getClientLanguage() or 'en').strip().lower()
-    except Exception:
-        try:
-            language = str(getClientLanguage() or 'en').strip().lower()
-        except Exception:
-            language = 'en'
-    return language.replace('-', '_')
-
-
-def _status_texts():
-    language = _client_language()
-    texts = _STATUS_TEXTS.get(language)
-    if texts is not None:
-        return texts
-    root = language.split('_', 1)[0]
-    return _STATUS_TEXTS.get(root, _STATUS_TEXTS['en'])
-
-
 def _load_config():
-    global _CONFIG
-    cfg = dict(_DEFAULT_CONFIG)
+    data = dict(_DEFAULT_CONFIG)
     try:
         if not os.path.isdir(_CONFIG_DIR):
             os.makedirs(_CONFIG_DIR)
         if os.path.isfile(_CONFIG_PATH):
             with open(_CONFIG_PATH, 'r') as stream:
-                stored = json.load(stream)
-            if isinstance(stored, dict):
-                for key in _DEFAULT_CONFIG:
-                    if key in stored:
-                        cfg[key] = stored[key]
+                loaded = json.load(stream)
+            if isinstance(loaded, dict):
+                data.update(loaded)
         else:
             with open(_CONFIG_PATH, 'w') as stream:
-                json.dump(cfg, stream, indent=2, sort_keys=True)
+                json.dump(data, stream, indent=2, sort_keys=True)
     except Exception:
-        _logger.exception('Failed to load settings.json; defaults are used')
+        _logger.exception('Failed to load High Caliber config')
+    return data
 
-    cfg['enabled'] = bool(cfg.get('enabled', True))
-    cfg['drag'] = bool(cfg.get('drag', True))
-    cfg['offsetX'] = _safe_int(cfg.get('offsetX', 380), 380)
-    cfg['offsetY'] = _safe_int(cfg.get('offsetY', 0), 0)
-    cfg['scale'] = max(0.5, min(2.0, _safe_float(cfg.get('scale', 1.0), 1.0)))
-    cfg['showDoneText'] = bool(cfg.get('showDoneText', True))
-    cfg['showWastedText'] = bool(cfg.get('showWastedText', True))
-    _CONFIG = cfg
+
+_CONFIG = _load_config()
+
+
+def _safe_float(value, fallback):
+    try:
+        return float(value)
+    except Exception:
+        return fallback
+
+
+def _client_language():
+    try:
+        language = getClientLanguage() or 'en'
+    except Exception:
+        language = 'en'
+    try:
+        language = language.lower().replace('-', '_')
+    except Exception:
+        language = 'en'
+    if language in _LOCALIZATION:
+        return language
+    short = language.split('_', 1)[0]
+    if short in _LOCALIZATION:
+        return short
+    return 'en'
+
+
+def _status_texts():
+    return _LOCALIZATION.get(_client_language(), _LOCALIZATION['en'])
 
 
 class HighCaliberState(object):
@@ -177,25 +154,30 @@ class HighCaliberState(object):
         self.teamHit = False
         self.ready = False
 
-    def setTotalEnemyHP(self, totalEnemyHP):
-        totalEnemyHP = max(0, _safe_int(totalEnemyHP))
-        if totalEnemyHP <= 0:
+    def setTotalEnemyHP(self, totalHP):
+        try:
+            totalHP = int(totalHP)
+        except Exception:
             return False
-        required = (totalEnemyHP + 4) // 5
-        changed = (not self.ready or self.totalEnemyHP != totalEnemyHP or self.requiredDamage != required)
-        self.totalEnemyHP = totalEnemyHP
-        self.requiredDamage = required
+        if totalHP <= 0:
+            return False
+        changed = totalHP != self.totalEnemyHP
+        self.totalEnemyHP = totalHP
+        self.requiredDamage = (totalHP + 4) // 5
         self.ready = True
         return changed
 
     def addDamage(self, damage):
-        damage = max(0, _safe_int(damage))
+        try:
+            damage = int(damage)
+        except Exception:
+            return False
         if damage <= 0:
             return False
         self.damage += damage
         return True
 
-    def markTeamHit(self):
+    def setTeamHit(self):
         if self.teamHit:
             return False
         self.teamHit = True
@@ -227,13 +209,16 @@ class HighCaliberModel(ViewModel):
         self.onResized += self.__onResized
 
     def __onResized(self, sizeMap=None, *args):
+        # The GameFace surface is intentionally fullscreen. Keep the Wulf
+        # window fixed at the top-left; the 150x40 indicator itself moves
+        # locally inside the surface in JS, which avoids per-frame Wulf moves.
         try:
-            width = int(sizeMap['width'])
-            height = int(sizeMap['height'])
-            gameScale = _safe_float(sizeMap.get('gameScale', 1.0), 1.0)
+            listener = _listener
+            window = None if listener is None else listener.window
+            if window is not None:
+                window.move(0, 0)
         except Exception:
-            return
-        _move_window(width, height, gameScale)
+            pass
 
     def getPayload(self):
         return self._getString(0)
@@ -266,6 +251,10 @@ class HighCaliberView(ViewImpl):
     def push(self):
         status = _STATE.status()
         doneText, wastedText = _status_texts()
+        try:
+            screenW, screenH = GUI.screenResolution()
+        except Exception:
+            screenW, screenH = (1920, 1080)
         payload = {
             'visible': bool(_CONFIG.get('enabled', True) and _STATE.ready),
             'status': status,
@@ -273,6 +262,10 @@ class HighCaliberView(ViewImpl):
             'damage': _STATE.damage,
             'requiredDamage': _STATE.requiredDamage,
             'scale': _CONFIG.get('scale', 1.0),
+            'offsetX': _CONFIG.get('offsetX', 380),
+            'offsetY': _CONFIG.get('offsetY', 0),
+            'screenWidth': int(screenW),
+            'screenHeight': int(screenH),
             'showDoneText': bool(_CONFIG.get('showDoneText', True)),
             'showWastedText': bool(_CONFIG.get('showWastedText', True)),
             'doneText': doneText,
@@ -316,6 +309,10 @@ class HighCaliberWindow(WindowImpl):
 
     def _onReady(self):
         self.show(focus=False)
+        try:
+            self.move(0, 0)
+        except Exception:
+            pass
 
 
 def _get_main_window():
@@ -330,7 +327,6 @@ def _get_main_window():
 
 
 def _battle_ready_to_show():
-    """Do not create the HUD while the team-loading screen still owns the battle space."""
     try:
         player = BigWorld.player()
         arena = getattr(player, 'arena', None)
@@ -338,7 +334,6 @@ def _battle_ready_to_show():
         return False
     if arena is None:
         return False
-
     try:
         period = int(getattr(arena, 'period', -1))
     except Exception:
@@ -347,7 +342,6 @@ def _battle_ready_to_show():
         return False
     if period >= 2:
         return True
-
     try:
         vehicle = None
         fn = getattr(player, 'getVehicleAttached', None)
@@ -362,7 +356,6 @@ def _battle_ready_to_show():
             return False
     except Exception:
         return False
-
     try:
         inputHandler = getattr(player, 'inputHandler', None)
         ctrl = getattr(inputHandler, 'ctrl', None) if inputHandler is not None else None
@@ -387,18 +380,16 @@ def _battle_ready_to_show():
 
 
 def _move_window(surfaceWidth, surfaceHeight, gameScale=1.0):
+    # Kept for compatibility with older helper packages. New smooth drag keeps
+    # the fullscreen Wulf surface fixed and does not call this during dragging.
     listener = _listener
     window = None if listener is None else listener.window
     if window is None:
         return
     try:
-        screenW, _screenH = GUI.screenResolution()
-        coordScale = max(0.01, _safe_float(gameScale, 1.0))
-        x = int(max(0, round((screenW - surfaceWidth) / (2.0 * coordScale) + _CONFIG.get('offsetX', 380))))
-        y = int(max(0, round(_CONFIG.get('offsetY', 0) / coordScale)))
-        window.move(x, y)
+        window.move(0, 0)
     except Exception:
-        _logger.exception('Failed to move High Caliber window')
+        pass
 
 
 class HighCaliberBattleListener(IBattleFieldListener):
@@ -468,242 +459,159 @@ class HighCaliberBattleListener(IBattleFieldListener):
 
 
 def _get_listener():
-    global _listener
-    if _listener is None:
-        _listener = HighCaliberBattleListener()
     return _listener
 
 
-def _push_ui():
+_listener = None
+_orig_setViewComponents = BattleFieldCtrl.setViewComponents
+
+
+def _set_view_components(self, *args, **kwargs):
+    global _listener
+    result = _orig_setViewComponents(self, *args, **kwargs)
     try:
-        listener = _get_listener()
-        listener.loadWindow()
+        if _listener is not None:
+            try:
+                self.removeBattleFieldListener(_listener)
+            except Exception:
+                pass
+            _listener.destroy()
+        _STATE.reset()
+        _listener = HighCaliberBattleListener()
+        self.addBattleFieldListener(_listener)
+        total = getattr(self, '_BattleFieldCtrl__totalEnemiesHealth', 0)
+        if _STATE.setTotalEnemyHP(total):
+            _push_ui()
+    except Exception:
+        _logger.exception('Failed to attach High Caliber battle listener')
+    return result
+
+
+BattleFieldCtrl.setViewComponents = _set_view_components
+
+
+def _push_ui():
+    listener = _listener
+    if listener is None:
+        return
+    try:
         if listener.view is not None:
             listener.view.push()
     except Exception:
         _logger.exception('Failed to update High Caliber UI')
 
 
-def _seed_total_enemy_hp(ctrl):
+def _on_battle_events(self, events):
+    result = _orig_onBattleEvents(self, events)
     try:
-        total = getattr(ctrl, '_BattleFieldCtrl__totalEnemiesHealth', 0)
-        if _STATE.setTotalEnemyHP(total):
-            _push_ui()
-    except Exception:
-        pass
-
-
-def _patched_setViewComponents(self, *components):
-    global _current_ctrl
-    _current_ctrl = self
-    listener = _get_listener()
-    forwarded = list(components)
-    if listener not in forwarded:
-        forwarded.append(listener)
-    result = _orig_setViewComponents(self, *tuple(forwarded))
-    _seed_total_enemy_hp(self)
-    _push_ui()
-    return result
-
-
-def _patched_stopControl(self):
-    global _listener, _current_ctrl
-    _current_ctrl = None
-    if _listener is not None:
-        try:
-            _listener.destroy()
-        except Exception:
-            pass
-    _listener = None
-    _STATE.reset()
-    return _orig_stopControl(self)
-
-
-def _process_battle_events(player, events):
-    if not _CONFIG.get('enabled', True):
-        return
-    try:
-        provider = player.guiSessionProvider
-        arenaDP = provider.getArenaDP()
+        arenaDP = self.guiSessionProvider.getArenaDP()
+        changed = False
         for data in events:
             event = feedback_events.PlayerFeedbackEvent.fromDict(data)
             if event.getBattleEventType() != BATTLE_EVENT_TYPE.DAMAGE:
                 continue
             targetID = event.getTargetID()
-            try:
-                vehicleInfo = arenaDP.getVehicleInfo(targetID)
-                if not arenaDP.isEnemyTeam(vehicleInfo.team):
-                    continue
-            except Exception:
+            vehicleInfo = arenaDP.getVehicleInfo(targetID)
+            if vehicleInfo is None or not arenaDP.isEnemyTeam(vehicleInfo.team):
                 continue
             extra = event.getExtra()
-            if extra is None:
-                continue
-            damage = _safe_int(extra.getDamage(), 0)
+            damage = 0 if extra is None else int(extra.getDamage())
             if _STATE.addDamage(damage):
-                _push_ui()
+                changed = True
+        if changed:
+            _push_ui()
     except Exception:
-        _logger.exception('Failed to process battle damage events')
-
-
-def _patched_onBattleEvents(self, events):
-    result = _orig_onBattleEvents(self, events)
-    _process_battle_events(self, events)
+        _logger.exception('Failed to process High Caliber damage event')
     return result
+
+
+_orig_onBattleEvents = PlayerAvatar.onBattleEvents
+PlayerAvatar.onBattleEvents = _on_battle_events
 
 
 def _extract_shot_result(raw):
     try:
         if isinstance(raw, (int, long)):
-            return ((raw >> 32) & 0xFFFFFFFF, raw & 0xFFFFFFFF)
+            vehicleID = int((raw >> 32) & 0xFFFFFFFF)
+            flags = int(raw & 0xFFFFFFFF)
+            return vehicleID, flags
     except Exception:
         pass
-
-    def _get(obj, names, default=None):
-        for name in names:
-            try:
-                value = getattr(obj, name)
-                if value is not None:
-                    return value
-            except Exception:
-                pass
-            try:
-                value = obj[name]
-                if value is not None:
-                    return value
-            except Exception:
-                pass
-            try:
-                value = obj.get(name)
-                if value is not None:
-                    return value
-            except Exception:
-                pass
-        return default
-
-    vehicleID = _get(raw, ('vehicleID', 'vehicleId', 'targetID', 'targetId'), 0)
-    flags = _get(raw, ('flags', 'hitFlags', 'result', 'hitResult'), 0)
     try:
-        return (int(vehicleID or 0), int(flags or 0))
+        getter = getattr(raw, 'get', None)
+        if callable(getter):
+            vehicleID = getter('vehicleID', getter('vehicleId', getter('targetID', getter('targetId', 0))))
+            flags = getter('flags', getter('hitFlags', getter('vehicleHitFlags', 0)))
+            return int(vehicleID or 0), int(flags or 0)
     except Exception:
-        return (0, 0)
+        pass
+    try:
+        vehicleID = getattr(raw, 'vehicleID', getattr(raw, 'vehicleId', getattr(raw, 'targetID', getattr(raw, 'targetId', 0))))
+        flags = getattr(raw, 'flags', getattr(raw, 'hitFlags', getattr(raw, 'vehicleHitFlags', 0)))
+        return int(vehicleID or 0), int(flags or 0)
+    except Exception:
+        return 0, 0
 
 
 def _process_shot_results(player, results):
-    if _STATE.teamHit or not _CONFIG.get('enabled', True):
-        return
     try:
-        arenaVehicles = player.arena.vehicles
-        playerVehicleID = player.playerVehicleID
-        playerTeam = player.team
+        arena = getattr(player, 'arena', None)
+        arenaVehicles = {} if arena is None else getattr(arena, 'vehicles', {})
         hitMask = VEHICLE_HIT_FLAGS.IS_ANY_DAMAGE_MASK | VEHICLE_HIT_FLAGS.ATTACK_IS_DIRECT_PROJECTILE
-        deadBeforeMask = getattr(VEHICLE_HIT_FLAGS, 'VEHICLE_WAS_DEAD_BEFORE_ATTACK', 0)
-
+        deadBefore = getattr(VEHICLE_HIT_FLAGS, 'VEHICLE_WAS_DEAD_BEFORE_ATTACK', 0)
         for raw in results:
             vehicleID, flags = _extract_shot_result(raw)
             if not vehicleID:
                 continue
-            if deadBeforeMask and flags & deadBeforeMask:
+            if deadBefore and flags & deadBefore:
                 continue
-            if vehicleID == playerVehicleID:
+            data = arenaVehicles.get(vehicleID)
+            if not data:
                 continue
-            vehicle = arenaVehicles.get(vehicleID)
-            if not vehicle:
+            if vehicleID == getattr(player, 'playerVehicleID', 0):
                 continue
-            if vehicle.get('team') != playerTeam:
+            if data.get('team') != getattr(player, 'team', None):
                 continue
-            if not vehicle.get('isAlive', True):
+            vehicle = BigWorld.entity(vehicleID)
+            if vehicle is not None and getattr(vehicle, 'health', 1) <= 0:
                 continue
             if flags & hitMask:
-                if _STATE.markTeamHit():
+                if _STATE.setTeamHit():
                     _push_ui()
                 break
     except Exception:
         _logger.exception('Failed to process friendly shot result')
 
 
-def _patched_showShotResults(self, results):
+_orig_showShotResults = PlayerAvatar.showShotResults
+
+
+def _show_shot_results(self, results):
+    result = _orig_showShotResults(self, results)
     _process_shot_results(self, results)
-    return _orig_showShotResults(self, results)
+    return result
 
 
-def _install_hooks():
-    global _orig_setViewComponents, _orig_stopControl
-    global _orig_onBattleEvents, _orig_showShotResults
-
-    if _orig_setViewComponents is None:
-        _orig_setViewComponents = battle_field_ctrl.BattleFieldCtrl.setViewComponents
-        _orig_stopControl = battle_field_ctrl.BattleFieldCtrl.stopControl
-        battle_field_ctrl.BattleFieldCtrl.setViewComponents = _patched_setViewComponents
-        battle_field_ctrl.BattleFieldCtrl.stopControl = _patched_stopControl
-
-    if _orig_onBattleEvents is None:
-        _orig_onBattleEvents = PlayerAvatar.onBattleEvents
-        PlayerAvatar.onBattleEvents = _patched_onBattleEvents
-
-    if _orig_showShotResults is None:
-        _orig_showShotResults = PlayerAvatar.showShotResults
-        PlayerAvatar.showShotResults = _patched_showShotResults
+PlayerAvatar.showShotResults = _show_shot_results
 
 
-def _restore_hooks():
-    global _orig_setViewComponents, _orig_stopControl
-    global _orig_onBattleEvents, _orig_showShotResults
-    try:
-        if _orig_setViewComponents is not None:
-            battle_field_ctrl.BattleFieldCtrl.setViewComponents = _orig_setViewComponents
-        if _orig_stopControl is not None:
-            battle_field_ctrl.BattleFieldCtrl.stopControl = _orig_stopControl
-    except Exception:
-        pass
-    try:
-        if _orig_onBattleEvents is not None:
-            PlayerAvatar.onBattleEvents = _orig_onBattleEvents
-        if _orig_showShotResults is not None:
-            PlayerAvatar.showShotResults = _orig_showShotResults
-    except Exception:
-        pass
-    _orig_setViewComponents = None
-    _orig_stopControl = None
-    _orig_onBattleEvents = None
-    _orig_showShotResults = None
+def init():
+    _logger.info('INQ High Caliber loaded, version=%s', MOD_VERSION)
 
 
-def _shutdown():
-    global _listener, _current_ctrl
-    _current_ctrl = None
+def fini():
+    global _listener
     if _listener is not None:
         try:
             _listener.destroy()
         except Exception:
             pass
-    _listener = None
-    _STATE.reset()
-
-
-def init():
-    try:
-        _load_config()
-        if not _OPENWG_OK:
-            _logger.error('OpenWG.Gameface is not available; mod UI cannot start')
-            return
-        _install_hooks()
-        _logger.info('INQ High Caliber loaded, version=%s', __version__)
-    except Exception:
-        _logger.exception('INQ High Caliber init failed')
-
-
-def fini():
-    try:
-        _shutdown()
-        _restore_hooks()
-    except Exception:
-        _logger.exception('INQ High Caliber fini failed')
+        _listener = None
 
 
 def onDisconnected():
-    _shutdown()
+    _STATE.reset()
 
 
 def onAccountBecomeNonPlayer():
-    _shutdown()
+    _STATE.reset()
