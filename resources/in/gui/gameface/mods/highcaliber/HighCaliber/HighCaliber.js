@@ -6,7 +6,7 @@
     var root = document.getElementById('root');
     var value = document.getElementById('value');
     var lastPayload = null;
-    var lastSurfaceSize = null;
+    var lastSurfaceState = null;
     var payloadTimer = null;
     var editFrame = null;
     var lastEditing = null;
@@ -55,21 +55,6 @@
         return BASE_HEIGHT * currentScale;
     }
 
-    function resizeSurface(cfg) {
-        var width = Math.max(1, Math.round(num(cfg.screenWidth, 1920)));
-        var height = Math.max(1, Math.round(num(cfg.screenHeight, 1080)));
-        var size = width + 'x' + height;
-        if (size !== lastSurfaceSize && window.viewEnv && viewEnv.resizeViewPx) {
-            lastSurfaceSize = size;
-            viewEnv.resizeViewPx(width, height);
-            try {
-                if (window.model && typeof window.model.onResized === 'function') {
-                    window.model.onResized({ width: width, height: height, gameScale: gameUiScale() });
-                }
-            } catch (e) {}
-        }
-    }
-
     function computeBasePosition(cfg) {
         var nativeScale = gameUiScale();
         var uiScale = clamp(num(cfg.scale, 1), 0.5, 2.0);
@@ -84,6 +69,53 @@
         baseTop = clamp(Math.round(offsetY * nativeScale), 0, maxTop);
     }
 
+    function resizeAndMoveSurface(edit, hidden, force) {
+        if (!window.viewEnv || !viewEnv.resizeViewPx) return;
+
+        var width;
+        var height;
+        var x;
+        var y;
+
+        if (hidden) {
+            width = 1;
+            height = 1;
+            x = 0;
+            y = 0;
+        } else if (edit) {
+            width = Math.max(1, Math.round(screenWidth()));
+            height = Math.max(1, Math.round(screenHeight()));
+            x = 0;
+            y = 0;
+        } else {
+            width = Math.max(1, Math.ceil(scaledWidth()));
+            height = Math.max(1, Math.ceil(scaledHeight()));
+            x = Math.round(baseLeft);
+            y = Math.round(baseTop);
+        }
+
+        var state = width + 'x' + height + '@' + x + ',' + y;
+        if (!force && state === lastSurfaceState) return;
+        lastSurfaceState = state;
+
+        try {
+            viewEnv.resizeViewPx(width, height);
+        } catch (e) {}
+
+        try {
+            if (window.model && typeof window.model.onResized === 'function') {
+                window.model.onResized({
+                    width: width,
+                    height: height,
+                    x: x,
+                    y: y,
+                    fullscreen: edit === true,
+                    gameScale: gameUiScale()
+                });
+            }
+        } catch (e2) {}
+    }
+
     function clampDragOffset(dx, dy) {
         var maxLeft = Math.max(0, screenWidth() - scaledWidth());
         var maxTop = Math.max(0, screenHeight() - scaledHeight());
@@ -94,10 +126,22 @@
 
     function applyRootPosition(dx, dy) {
         if (!root) return { dx: 0, dy: 0 };
+
+        root.style.transform = 'scale(' + currentScale + ')';
+
+        // In normal gameplay the actual GameFace/Wulf surface is already
+        // positioned at baseLeft/baseTop and is only 150x40, so the DOM root
+        // starts at 0,0. During Ctrl edit mode the surface is fullscreen and
+        // the root uses absolute battle-screen coordinates for smooth drag.
+        if (lastEditing !== true) {
+            root.style.left = '0px';
+            root.style.top = '0px';
+            return { dx: 0, dy: 0 };
+        }
+
         var limited = clampDragOffset(dx, dy);
         root.style.left = Math.round(baseLeft + limited.dx) + 'px';
         root.style.top = Math.round(baseTop + limited.dy) + 'px';
-        root.style.transform = 'scale(' + currentScale + ')';
         return limited;
     }
 
@@ -119,11 +163,24 @@
         var visible = currentCfg.visible === true;
         var edit = visible && currentCfg.dragEnabled !== false && modelEditing();
         if (!force && edit === lastEditing) return;
+
         lastEditing = edit;
+
         if (!root) return;
-        root.className = visible ? (edit ? 'editing' : '') : 'hidden';
+        if (!visible) {
+            root.className = 'hidden';
+            setInputEnabled(false);
+            dragging = false;
+            resizeAndMoveSurface(false, true, force);
+            return;
+        }
+
+        root.className = edit ? 'editing' : '';
         setInputEnabled(edit);
         if (!edit) dragging = false;
+
+        resizeAndMoveSurface(edit, false, force);
+        applyRootPosition(0, 0);
     }
 
     function editingLoop() {
@@ -134,19 +191,12 @@
 
     function render(cfg) {
         currentCfg = cfg || {};
-        resizeSurface(currentCfg);
         computeBasePosition(currentCfg);
+        syncEditing(true);
 
-        if (currentCfg.visible !== true) {
-            if (root) root.className = 'hidden';
-            setInputEnabled(false);
-            dragging = false;
-            lastEditing = null;
-            return;
-        }
+        if (currentCfg.visible !== true) return;
 
         if (!dragging) applyRootPosition(0, 0);
-        syncEditing(true);
 
         var status = String(currentCfg.status || 'progress');
         if (status === 'wasted') {
@@ -248,8 +298,16 @@
                 tick();
                 syncEditing(true);
             });
-            window.engine.on('self.onScaleUpdated', function () { lastSurfaceSize = null; tick(); });
-            window.engine.on('clientResized', function () { lastSurfaceSize = null; tick(); });
+            window.engine.on('self.onScaleUpdated', function () {
+                lastSurfaceState = null;
+                tick();
+                syncEditing(true);
+            });
+            window.engine.on('clientResized', function () {
+                lastSurfaceState = null;
+                tick();
+                syncEditing(true);
+            });
         }
         if (!payloadTimer) payloadTimer = window.setInterval(tick, 100);
         if (!editFrame) editingLoop();
