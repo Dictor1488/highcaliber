@@ -42,6 +42,7 @@ _CONFIG_DIR = os.path.join('mods', 'configs', 'highcaliber')
 _CONFIG_PATH = os.path.join(_CONFIG_DIR, 'settings.json')
 _DEFAULT_CONFIG = {
     'enabled': True,
+    'drag': True,
     'offsetX': 380,
     'offsetY': 0,
     'scale': 1.0,
@@ -155,6 +156,7 @@ def _load_config():
         _logger.exception('Failed to load settings.json; defaults are used')
 
     cfg['enabled'] = bool(cfg.get('enabled', True))
+    cfg['drag'] = bool(cfg.get('drag', True))
     cfg['offsetX'] = _safe_int(cfg.get('offsetX', 380), 380)
     cfg['offsetY'] = _safe_int(cfg.get('offsetY', 0), 0)
     cfg['scale'] = max(0.5, min(2.0, _safe_float(cfg.get('scale', 1.0), 1.0)))
@@ -275,6 +277,7 @@ class HighCaliberView(ViewImpl):
             'showWastedText': bool(_CONFIG.get('showWastedText', True)),
             'doneText': doneText,
             'wastedText': wastedText,
+            'dragEnabled': bool(_CONFIG.get('drag', True)),
             'colorProgress': _CONFIG.get('colorProgress', '#F8F400'),
             'colorDone': _CONFIG.get('colorDone', '#60FF00'),
             'colorWasted': _CONFIG.get('colorWasted', '#FE0E00')
@@ -326,6 +329,63 @@ def _get_main_window():
         return None
 
 
+def _battle_ready_to_show():
+    """Do not create the HUD while the team-loading screen still owns the battle space."""
+    try:
+        player = BigWorld.player()
+        arena = getattr(player, 'arena', None)
+    except Exception:
+        return False
+    if arena is None:
+        return False
+
+    try:
+        period = int(getattr(arena, 'period', -1))
+    except Exception:
+        period = -1
+    if period < 1:
+        return False
+    if period >= 2:
+        return True
+
+    try:
+        vehicle = None
+        fn = getattr(player, 'getVehicleAttached', None)
+        if callable(fn):
+            vehicle = fn()
+        if vehicle is None:
+            vehicle = getattr(player, 'vehicle', None)
+        if vehicle is None:
+            return False
+        health = getattr(vehicle, 'health', None)
+        if health is not None and int(health) <= 0:
+            return False
+    except Exception:
+        return False
+
+    try:
+        inputHandler = getattr(player, 'inputHandler', None)
+        ctrl = getattr(inputHandler, 'ctrl', None) if inputHandler is not None else None
+        if ctrl is None:
+            return False
+        for attr in ('curVehicleID', 'vehicleID', 'controlledVehicleID'):
+            try:
+                if getattr(ctrl, attr, None):
+                    return True
+            except Exception:
+                pass
+        for method in ('getCameraType', 'getControlModeName', 'getModeName'):
+            try:
+                fn = getattr(ctrl, method, None)
+                if callable(fn) and fn():
+                    return True
+            except Exception:
+                pass
+        return getattr(inputHandler, 'camera', None) is not None
+    except Exception:
+        return False
+
+
 def _move_window(surfaceWidth, surfaceHeight, gameScale=1.0):
     listener = _listener
     window = None if listener is None else listener.window
@@ -355,6 +415,10 @@ class HighCaliberBattleListener(IBattleFieldListener):
 
     def loadWindow(self, retry=0):
         if not _OPENWG_OK or not _CONFIG.get('enabled', True) or self.window is not None:
+            return
+        if not _battle_ready_to_show():
+            if retry < 300 and self._retryCallback is None:
+                self._retryCallback = BigWorld.callback(0.1, lambda: self._retryLoad(retry + 1))
             return
         parent = _get_main_window()
         status = None if parent is None else getattr(parent, 'windowStatus', None)
@@ -488,6 +552,43 @@ def _patched_onBattleEvents(self, events):
     return result
 
 
+def _extract_shot_result(raw):
+    try:
+        if isinstance(raw, (int, long)):
+            return ((raw >> 32) & 0xFFFFFFFF, raw & 0xFFFFFFFF)
+    except Exception:
+        pass
+
+    def _get(obj, names, default=None):
+        for name in names:
+            try:
+                value = getattr(obj, name)
+                if value is not None:
+                    return value
+            except Exception:
+                pass
+            try:
+                value = obj[name]
+                if value is not None:
+                    return value
+            except Exception:
+                pass
+            try:
+                value = obj.get(name)
+                if value is not None:
+                    return value
+            except Exception:
+                pass
+        return default
+
+    vehicleID = _get(raw, ('vehicleID', 'vehicleId', 'targetID', 'targetId'), 0)
+    flags = _get(raw, ('flags', 'hitFlags', 'result', 'hitResult'), 0)
+    try:
+        return (int(vehicleID or 0), int(flags or 0))
+    except Exception:
+        return (0, 0)
+
+
 def _process_shot_results(player, results):
     if _STATE.teamHit or not _CONFIG.get('enabled', True):
         return
@@ -499,8 +600,9 @@ def _process_shot_results(player, results):
         deadBeforeMask = getattr(VEHICLE_HIT_FLAGS, 'VEHICLE_WAS_DEAD_BEFORE_ATTACK', 0)
 
         for raw in results:
-            vehicleID = raw & 0xFFFFFFFF
-            flags = (raw >> 32) & 0xFFFFFFFF
+            vehicleID, flags = _extract_shot_result(raw)
+            if not vehicleID:
+                continue
             if deadBeforeMask and flags & deadBeforeMask:
                 continue
             if vehicleID == playerVehicleID:
@@ -583,11 +685,12 @@ def init():
     try:
         _load_config()
         if not _OPENWG_OK:
-            _logger.error('OpenWG.Gameface is unavailable')
+            _logger.error('OpenWG.Gameface is not available; mod UI cannot start')
             return
         _install_hooks()
+        _logger.info('INQ High Caliber loaded, version=%s', __version__)
     except Exception:
-        _logger.exception('High Caliber init failed')
+        _logger.exception('INQ High Caliber init failed')
 
 
 def fini():
@@ -595,7 +698,7 @@ def fini():
         _shutdown()
         _restore_hooks()
     except Exception:
-        _logger.exception('High Caliber fini failed')
+        _logger.exception('INQ High Caliber fini failed')
 
 
 def onDisconnected():
