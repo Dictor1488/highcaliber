@@ -69,7 +69,7 @@
         baseTop = clamp(Math.round(offsetY * nativeScale), 0, maxTop);
     }
 
-    function resizeAndMoveSurface(edit, hidden, force) {
+    function resizeAndMoveSurface(fullscreen, hidden, force) {
         if (!window.viewEnv || !viewEnv.resizeViewPx) return;
 
         var width;
@@ -82,7 +82,7 @@
             height = 1;
             x = 0;
             y = 0;
-        } else if (edit) {
+        } else if (fullscreen) {
             width = Math.max(1, Math.round(screenWidth()));
             height = Math.max(1, Math.round(screenHeight()));
             x = 0;
@@ -98,9 +98,7 @@
         if (!force && state === lastSurfaceState) return;
         lastSurfaceState = state;
 
-        try {
-            viewEnv.resizeViewPx(width, height);
-        } catch (e) {}
+        try { viewEnv.resizeViewPx(width, height); } catch (e) {}
 
         try {
             if (window.model && typeof window.model.onResized === 'function') {
@@ -109,7 +107,7 @@
                     height: height,
                     x: x,
                     y: y,
-                    fullscreen: edit === true,
+                    fullscreen: fullscreen === true,
                     gameScale: gameUiScale()
                 });
             }
@@ -126,14 +124,9 @@
 
     function applyRootPosition(dx, dy) {
         if (!root) return { dx: 0, dy: 0 };
-
         root.style.transform = 'scale(' + currentScale + ')';
 
-        // In normal gameplay the actual GameFace/Wulf surface is already
-        // positioned at baseLeft/baseTop and is only 150x40, so the DOM root
-        // starts at 0,0. During Ctrl edit mode the surface is fullscreen and
-        // the root uses absolute battle-screen coordinates for smooth drag.
-        if (lastEditing !== true) {
+        if (!dragging) {
             root.style.left = '0px';
             root.style.top = '0px';
             return { dx: 0, dy: 0 };
@@ -147,7 +140,7 @@
 
     function setInputEnabled(enabled) {
         try { document.documentElement.style.pointerEvents = 'none'; } catch (e) {}
-        try { document.body.style.pointerEvents = 'none'; } catch (e) {}
+        try { document.body.style.pointerEvents = 'none'; } catch (e2) {}
         if (root) root.style.pointerEvents = enabled ? 'auto' : 'none';
     }
 
@@ -163,7 +156,6 @@
         var visible = currentCfg.visible === true;
         var edit = visible && currentCfg.dragEnabled !== false && modelEditing();
         if (!force && edit === lastEditing) return;
-
         lastEditing = edit;
 
         if (!root) return;
@@ -177,10 +169,19 @@
 
         root.className = edit ? 'editing' : '';
         setInputEnabled(edit);
-        if (!edit) dragging = false;
 
-        resizeAndMoveSurface(edit, false, force);
-        applyRootPosition(0, 0);
+        if (!edit && dragging) {
+            dragging = false;
+            dragDx = 0;
+            dragDy = 0;
+        }
+
+        // Ctrl alone never creates a fullscreen hit area. The surface remains
+        // exactly the size of the panel until mousedown starts a real drag.
+        if (!dragging) {
+            resizeAndMoveSurface(false, false, force);
+            applyRootPosition(0, 0);
+        }
     }
 
     function editingLoop() {
@@ -191,12 +192,9 @@
 
     function render(cfg) {
         currentCfg = cfg || {};
-        computeBasePosition(currentCfg);
+        if (!dragging) computeBasePosition(currentCfg);
         syncEditing(true);
-
         if (currentCfg.visible !== true) return;
-
-        if (!dragging) applyRootPosition(0, 0);
 
         var status = String(currentCfg.status || 'progress');
         if (status === 'wasted') {
@@ -239,12 +237,19 @@
     function onMouseDown(e) {
         if (!root || root.className.indexOf('editing') < 0) return;
         if (e.button !== 0) return;
+
         dragging = true;
         dragStartX = pointerX(e);
         dragStartY = pointerY(e);
         dragDx = 0;
         dragDy = 0;
+
+        // Only now, after the user actually grabbed the 150x40 panel, expand
+        // the surface so mousemove/mouseup continue to arrive outside it.
+        resizeAndMoveSurface(true, false, true);
+        applyRootPosition(0, 0);
         sendDrag(0, 0, false, true);
+
         e.preventDefault();
         e.stopPropagation();
     }
@@ -261,10 +266,11 @@
 
     function onMouseUp(e) {
         if (!dragging) return;
+
         var limited = clampDragOffset(pointerX(e) - dragStartX, pointerY(e) - dragStartY);
         dragDx = limited.dx;
         dragDy = limited.dy;
-        dragging = false;
+
         if (dragFrame !== null) {
             try {
                 if (window.cancelAnimationFrame) window.cancelAnimationFrame(dragFrame);
@@ -272,8 +278,20 @@
             } catch (ex) {}
             dragFrame = null;
         }
+
         applyRootPosition(dragDx, dragDy);
         sendDrag(dragDx, dragDy, true, false);
+
+        // Keep visual position continuous while Python persists the new config,
+        // then immediately return to the small non-blocking surface.
+        baseLeft += dragDx;
+        baseTop += dragDy;
+        dragging = false;
+        dragDx = 0;
+        dragDy = 0;
+        resizeAndMoveSurface(false, false, true);
+        applyRootPosition(0, 0);
+
         e.preventDefault();
         e.stopPropagation();
     }
@@ -293,6 +311,7 @@
         window.addEventListener('mouseup', onMouseUp, true);
         tick();
         syncEditing(true);
+
         if (window.engine) {
             window.engine.on('viewEnv.onDataChanged', function () {
                 tick();
@@ -309,6 +328,7 @@
                 syncEditing(true);
             });
         }
+
         if (!payloadTimer) payloadTimer = window.setInterval(tick, 100);
         if (!editFrame) editingLoop();
     }
