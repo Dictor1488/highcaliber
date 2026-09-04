@@ -1,30 +1,43 @@
 # -*- coding: utf-8 -*-
-"""Ctrl-drag support for the standalone High Caliber indicator."""
+"""Ctrl-drag support for the standalone High Caliber indicator.
+
+Drag follows the working MARKS GameFace pattern:
+- GameFace only reports drag start/end.
+- Python reads GUI.mcursor() every frame while LMB is held.
+- The small Wulf window itself is moved directly.
+- No fullscreen GameFace surface and no per-mousemove JS/Python bridge.
+"""
 
 import json
 import os
 
 import BigWorld
+import GUI
 
 try:
     import InputHandler
 except Exception:
     InputHandler = None
 
-from frameworks.wulf import ViewModel
+from frameworks.wulf import ViewModel, PositionAnchor
 from gui.mods import mod_highcaliber as hc
 
 _CTRL_KEYS = (29, 157)
+_BASE_WIDTH = 150.0
+_BASE_HEIGHT = 40.0
 
 _editing = False
 _installed = False
 _orig_model_init = None
 _orig_model_initialize = None
 _orig_view_push = None
+_orig_window_ready = None
 _orig_process_shot_results = None
 _ctrl_poll = None
-_drag_base_x = None
-_drag_base_y = None
+_drag_callback = None
+_drag_cursor_start = None
+_drag_window_start = None
+_drag_last_xy = None
 
 
 def _save_config():
@@ -53,8 +66,220 @@ def _window():
         return None
 
 
+def _pair(value):
+    if value is None:
+        return None
+    try:
+        return (float(value.x), float(value.y))
+    except Exception:
+        try:
+            return (float(value[0]), float(value[1]))
+        except Exception:
+            return None
+
+
+def _panel_size():
+    try:
+        scale = float(hc._CONFIG.get('scale', 1.0) or 1.0)
+    except Exception:
+        scale = 1.0
+    scale = max(0.5, min(2.0, scale))
+    return (_BASE_WIDTH * scale, _BASE_HEIGHT * scale)
+
+
+def _parent_size(window):
+    try:
+        size = _pair(getattr(getattr(window, 'parent', None), 'size', None))
+        if size is not None and size[0] > 0 and size[1] > 0:
+            return size
+    except Exception:
+        pass
+    try:
+        physical = GUI.screenResolution()
+        scale = _interface_scale(window)
+        return (float(physical[0]) / scale, float(physical[1]) / scale)
+    except Exception:
+        return (1920.0, 1080.0)
+
+
+def _interface_scale(window):
+    """Physical pixels per logical Wulf unit, copied from MARKS logic."""
+    try:
+        physical = _pair(GUI.screenResolution())
+        logical = _pair(getattr(getattr(window, 'parent', None), 'size', None))
+        if physical is None or logical is None or logical[0] <= 0 or logical[1] <= 0:
+            return 1.0
+        scale = ((physical[0] / logical[0]) + (physical[1] / logical[1])) * 0.5
+        return max(0.5, min(4.0, float(scale)))
+    except Exception:
+        return 1.0
+
+
+def _clamp_xy(window, x, y):
+    parent_w, parent_h = _parent_size(window)
+    panel_w, panel_h = _panel_size()
+    max_x = max(0.0, parent_w - panel_w)
+    max_y = max(0.0, parent_h - panel_h)
+    return (max(0.0, min(float(x), max_x)),
+            max(0.0, min(float(y), max_y)))
+
+
+def _position_from_config(window):
+    parent_w, _ = _parent_size(window)
+    panel_w, _ = _panel_size()
+    try:
+        offset_x = float(hc._CONFIG.get('offsetX', 380) or 0)
+    except Exception:
+        offset_x = 380.0
+    try:
+        offset_y = float(hc._CONFIG.get('offsetY', 0) or 0)
+    except Exception:
+        offset_y = 0.0
+    x = (parent_w - panel_w) * 0.5 + offset_x
+    y = offset_y
+    return _clamp_xy(window, x, y)
+
+
+def _config_from_position(window, x, y):
+    parent_w, _ = _parent_size(window)
+    panel_w, _ = _panel_size()
+    x, y = _clamp_xy(window, x, y)
+    hc._CONFIG['offsetX'] = int(round(x - (parent_w - panel_w) * 0.5))
+    hc._CONFIG['offsetY'] = int(round(y))
+    return x, y
+
+
+def _move_window(window, x, y):
+    x, y = _clamp_xy(window, x, y)
+    try:
+        window.move(int(round(x)), int(round(y)),
+                    xAnchor=PositionAnchor.LEFT,
+                    yAnchor=PositionAnchor.TOP)
+    except TypeError:
+        window.move(int(round(x)), int(round(y)))
+    return x, y
+
+
+def _apply_saved_position():
+    if _drag_cursor_start is not None:
+        return
+    window = _window()
+    if window is None:
+        return
+    try:
+        x, y = _position_from_config(window)
+        x, y = _move_window(window, x, y)
+        # Normalize old/bad coordinates immediately so a previous fullscreen
+        # build cannot leave the indicator outside the current logical screen.
+        old_x = int(hc._CONFIG.get('offsetX', 380))
+        old_y = int(hc._CONFIG.get('offsetY', 0))
+        _config_from_position(window, x, y)
+        if old_x != hc._CONFIG.get('offsetX') or old_y != hc._CONFIG.get('offsetY'):
+            _save_config()
+    except Exception:
+        hc._logger.exception('Failed to position High Caliber window')
+
+
+def _cursor_position_px():
+    """Exact cursor conversion used by MARKS."""
+    resolution = GUI.screenResolution()
+    width = float(resolution[0])
+    height = float(resolution[1])
+    pos = GUI.mcursor().position
+    return ((pos.x * 0.5 + 0.5) * width,
+            (0.5 - pos.y * 0.5) * height)
+
+
+def _left_mouse_down():
+    try:
+        import Keys
+        return bool(BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE))
+    except Exception:
+        # JS mouseup still calls _drag_end if the key constant is unavailable.
+        return True
+
+
+def _drag_start():
+    global _drag_cursor_start, _drag_window_start, _drag_last_xy
+    if not _editing or not hc._CONFIG.get('drag', True):
+        return
+    window = _window()
+    if window is None or _drag_cursor_start is not None:
+        return
+    try:
+        start_x, start_y = _position_from_config(window)
+        start_x, start_y = _move_window(window, start_x, start_y)
+        _drag_cursor_start = _cursor_position_px()
+        _drag_window_start = (start_x, start_y)
+        _drag_last_xy = (start_x, start_y)
+        _drag_tick()
+    except Exception:
+        _drag_cursor_start = None
+        _drag_window_start = None
+        _drag_last_xy = None
+        hc._logger.exception('High Caliber drag start failed')
+
+
+def _drag_tick():
+    global _drag_callback, _drag_last_xy
+    _drag_callback = None
+    if _drag_cursor_start is None or _drag_window_start is None:
+        return
+    if not _left_mouse_down():
+        _drag_end()
+        return
+    window = _window()
+    if window is None:
+        _drag_end()
+        return
+    try:
+        cursor_x, cursor_y = _cursor_position_px()
+        scale = _interface_scale(window)
+        x = _drag_window_start[0] + (cursor_x - _drag_cursor_start[0]) / scale
+        y = _drag_window_start[1] + (cursor_y - _drag_cursor_start[1]) / scale
+        _drag_last_xy = _move_window(window, x, y)
+    except Exception:
+        hc._logger.exception('High Caliber drag tick failed')
+        _drag_end()
+        return
+    try:
+        _drag_callback = BigWorld.callback(0.0, _drag_tick)
+    except Exception:
+        _drag_callback = None
+
+
+def _drag_end():
+    global _drag_callback, _drag_cursor_start, _drag_window_start, _drag_last_xy
+    if _drag_callback is not None:
+        try:
+            BigWorld.cancelCallback(_drag_callback)
+        except Exception:
+            pass
+        _drag_callback = None
+
+    if _drag_cursor_start is None:
+        return
+
+    window = _window()
+    final_xy = _drag_last_xy
+    _drag_cursor_start = None
+    _drag_window_start = None
+    _drag_last_xy = None
+
+    if window is None or final_xy is None:
+        return
+    try:
+        x, y = _config_from_position(window, final_xy[0], final_xy[1])
+        _move_window(window, x, y)
+        _save_config()
+        hc._logger.info('High Caliber position saved: x=%s y=%s',
+                        hc._CONFIG.get('offsetX'), hc._CONFIG.get('offsetY'))
+        hc._push_ui()
+    except Exception:
+        hc._logger.exception('High Caliber drag end failed')
+
+
 def _push_edit_state():
-    """Push only the Ctrl/edit bit. Do not rebuild the JSON HUD payload."""
     view = _view()
     if view is None:
         return
@@ -66,7 +291,6 @@ def _push_edit_state():
 
 
 def _model_init(self, properties=2, commands=2):
-    # payload is property 0, editing is property 1.
     ViewModel.__init__(self, properties=2, commands=2)
 
 
@@ -78,76 +302,19 @@ def _model_set_editing(self, value):
     self._setBool(1, bool(value))
 
 
-def _on_surface_resized(data=None, *args):
-    """Move the actual Wulf window to the GameFace surface origin.
-
-    In normal mode JS keeps the surface only as large as the 150x40 HUD item
-    and positions this Wulf window at the indicator coordinates. In edit mode
-    JS temporarily expands the surface fullscreen and sends x=y=0.
-    """
-    window = _window()
-    if window is None:
-        return
-    try:
-        x = int(round(float(data.get('x', 0) or 0)))
-        y = int(round(float(data.get('y', 0) or 0)))
-    except Exception:
-        x = 0
-        y = 0
-    try:
-        window.move(x, y)
-    except Exception:
-        pass
-
-
 def _on_dragged(data=None, *args):
-    global _drag_base_x, _drag_base_y
-    if not _editing or not hc._CONFIG.get('drag', True):
+    if not isinstance(data, dict):
         return
-    try:
-        dx = float(data.get('dx', 0) or 0)
-        dy = float(data.get('dy', 0) or 0)
-        final = bool(data.get('final', False))
-        start = bool(data.get('start', False))
-        game_scale = max(0.01, float(data.get('gameScale', 1.0) or 1.0))
-    except Exception:
-        return
-
-    if start:
-        _drag_base_x = int(hc._CONFIG.get('offsetX', 380))
-        _drag_base_y = int(hc._CONFIG.get('offsetY', 0))
-        return
-
-    # Visual motion is local in GameFace. Python only commits on mouseup.
-    if not final:
-        return
-
-    if _drag_base_x is None or _drag_base_y is None:
-        _drag_base_x = int(hc._CONFIG.get('offsetX', 380))
-        _drag_base_y = int(hc._CONFIG.get('offsetY', 0))
-
-    hc._CONFIG['offsetX'] = int(round(_drag_base_x + dx / game_scale))
-    hc._CONFIG['offsetY'] = int(round(_drag_base_y + dy / game_scale))
-    _save_config()
-    hc._logger.info('High Caliber position saved: x=%s y=%s', hc._CONFIG.get('offsetX'), hc._CONFIG.get('offsetY'))
-    _drag_base_x = None
-    _drag_base_y = None
-    try:
-        hc._push_ui()
-        _push_edit_state()
-    except Exception:
-        pass
+    phase = data.get('phase')
+    if phase == 'start':
+        _drag_start()
+    elif phase == 'end':
+        _drag_end()
 
 
 def _model_initialize(self):
     _orig_model_initialize(self)
     self._addBoolProperty('editing', False)
-    # Core already created onResized. Add our position handler after the core
-    # handler; it intentionally overrides core's legacy window.move(0, 0).
-    try:
-        self.onResized += _on_surface_resized
-    except Exception:
-        pass
     self.onDragged = self._addCommand('onDragged')
     self.onDragged += _on_dragged
 
@@ -155,6 +322,15 @@ def _model_initialize(self):
 def _view_push(self):
     _orig_view_push(self)
     _push_edit_state()
+    _apply_saved_position()
+
+
+def _window_ready(self):
+    _orig_window_ready(self)
+    try:
+        BigWorld.callback(0.0, _apply_saved_position)
+    except Exception:
+        _apply_saved_position()
 
 
 def _event_key(event):
@@ -191,14 +367,13 @@ def _ctrl_down_now():
 
 
 def _set_editing(value):
-    global _editing, _drag_base_x, _drag_base_y
+    global _editing
     value = bool(value and hc._CONFIG.get('drag', True) and hc._battle_ready_to_show())
     if _editing == value:
         return
+    if not value:
+        _drag_end()
     _editing = value
-    if not _editing:
-        _drag_base_x = None
-        _drag_base_y = None
     hc._logger.info('High Caliber edit mode: %s', _editing)
     _push_edit_state()
 
@@ -228,7 +403,7 @@ def _schedule_ctrl_poll():
     global _ctrl_poll
     if _ctrl_poll is None:
         try:
-            # Backup only. InputHandler events are the primary path.
+            # Backup only; InputHandler events are the primary path.
             _ctrl_poll = BigWorld.callback(0.05, _ctrl_poll_tick)
         except Exception:
             _ctrl_poll = None
@@ -254,7 +429,7 @@ def _fixed_process_shot_results(player, results):
 def _install():
     global _installed
     global _orig_model_init, _orig_model_initialize, _orig_view_push
-    global _orig_process_shot_results
+    global _orig_window_ready, _orig_process_shot_results
     if _installed:
         return
 
@@ -264,6 +439,7 @@ def _install():
     _orig_model_init = hc.HighCaliberModel.__init__
     _orig_model_initialize = hc.HighCaliberModel._initialize
     _orig_view_push = hc.HighCaliberView.push
+    _orig_window_ready = hc.HighCaliberWindow._onReady
     _orig_process_shot_results = hc._process_shot_results
 
     hc.HighCaliberModel.__init__ = _model_init
@@ -271,6 +447,7 @@ def _install():
     hc.HighCaliberModel.getEditing = _model_get_editing
     hc.HighCaliberModel.setEditing = _model_set_editing
     hc.HighCaliberView.push = _view_push
+    hc.HighCaliberWindow._onReady = _window_ready
     hc._process_shot_results = _fixed_process_shot_results
 
     if InputHandler is not None:
@@ -281,15 +458,16 @@ def _install():
             hc._logger.exception('Failed to install High Caliber Ctrl input')
 
     _schedule_ctrl_poll()
-    hc._logger.info('High Caliber Ctrl-drag helper installed; keys=%r', _CTRL_KEYS)
+    hc._logger.info('High Caliber MARKS-style Ctrl-drag installed; keys=%r', _CTRL_KEYS)
     _installed = True
 
 
 def _restore():
-    global _installed, _editing, _drag_base_x, _drag_base_y
+    global _installed, _editing
     if not _installed:
         return
 
+    _drag_end()
     _stop_ctrl_poll()
 
     if InputHandler is not None:
@@ -306,14 +484,14 @@ def _restore():
             hc.HighCaliberModel._initialize = _orig_model_initialize
         if _orig_view_push is not None:
             hc.HighCaliberView.push = _orig_view_push
+        if _orig_window_ready is not None:
+            hc.HighCaliberWindow._onReady = _orig_window_ready
         if _orig_process_shot_results is not None:
             hc._process_shot_results = _orig_process_shot_results
     except Exception:
         pass
 
     _editing = False
-    _drag_base_x = None
-    _drag_base_y = None
     _installed = False
 
 
