@@ -6,7 +6,7 @@
     var root = document.getElementById('root');
     var value = document.getElementById('value');
     var lastPayload = null;
-    var lastSize = null;
+    var lastSurfaceSize = null;
     var timer = null;
     var dragging = false;
     var dragStartX = 0;
@@ -14,6 +14,10 @@
     var dragDx = 0;
     var dragDy = 0;
     var dragFrame = null;
+    var currentCfg = {};
+    var currentScale = 1;
+    var baseLeft = 0;
+    var baseTop = 0;
 
     function num(v, d) {
         v = Number(v);
@@ -33,62 +37,72 @@
         return 1;
     }
 
-    function resize(scale) {
-        var nativeScale = gameUiScale();
-        var uiScale = clamp(num(scale, 1), 0.5, 2.0);
-        var renderScale = nativeScale * uiScale;
-        var width = Math.ceil(BASE_WIDTH * renderScale);
-        var height = Math.ceil(BASE_HEIGHT * renderScale);
-        var size = width + 'x' + height + '@' + nativeScale.toFixed(4);
-
-        root.style.transform = 'scale(' + renderScale + ')';
-
-        if (size !== lastSize && window.viewEnv && viewEnv.resizeViewPx) {
-            lastSize = size;
+    function resizeSurface(cfg) {
+        var width = Math.max(1, Math.round(num(cfg.screenWidth, 1920)));
+        var height = Math.max(1, Math.round(num(cfg.screenHeight, 1080)));
+        var size = width + 'x' + height;
+        if (size !== lastSurfaceSize && window.viewEnv && viewEnv.resizeViewPx) {
+            lastSurfaceSize = size;
             viewEnv.resizeViewPx(width, height);
             try {
                 if (window.model && typeof window.model.onResized === 'function') {
-                    window.model.onResized({
-                        width: width,
-                        height: height,
-                        gameScale: nativeScale
-                    });
+                    window.model.onResized({ width: width, height: height, gameScale: gameUiScale() });
                 }
             } catch (e) {}
         }
     }
 
+    function computeBasePosition(cfg) {
+        var nativeScale = gameUiScale();
+        var uiScale = clamp(num(cfg.scale, 1), 0.5, 2.0);
+        currentScale = nativeScale * uiScale;
+        var screenW = Math.max(1, num(cfg.screenWidth, 1920));
+        var offsetX = num(cfg.offsetX, 380);
+        var offsetY = num(cfg.offsetY, 0);
+        baseLeft = Math.round((screenW - BASE_WIDTH * currentScale) / 2 + offsetX * nativeScale);
+        baseTop = Math.max(0, Math.round(offsetY * nativeScale));
+    }
+
+    function applyRootPosition(dx, dy) {
+        if (!root) return;
+        root.style.left = Math.round(baseLeft + dx) + 'px';
+        root.style.top = Math.round(baseTop + dy) + 'px';
+        root.style.transform = 'scale(' + currentScale + ')';
+    }
+
     function setInputEnabled(enabled) {
-        var mode = enabled ? 'auto' : 'none';
-        try { document.documentElement.style.pointerEvents = mode; } catch (e) {}
-        try { document.body.style.pointerEvents = mode; } catch (e) {}
-        if (root) root.style.pointerEvents = mode;
+        try { document.documentElement.style.pointerEvents = 'none'; } catch (e) {}
+        try { document.body.style.pointerEvents = 'none'; } catch (e) {}
+        if (root) root.style.pointerEvents = enabled ? 'auto' : 'none';
     }
 
     function render(cfg) {
-        if (cfg.visible !== true) {
+        currentCfg = cfg || {};
+        resizeSurface(currentCfg);
+        computeBasePosition(currentCfg);
+
+        if (currentCfg.visible !== true) {
             if (root) root.className = 'hidden';
             setInputEnabled(false);
             dragging = false;
             return;
         }
 
-        var edit = cfg.editing === true && cfg.dragEnabled !== false;
+        var edit = currentCfg.editing === true && currentCfg.dragEnabled !== false;
         root.className = edit ? 'editing' : '';
         setInputEnabled(edit);
-        if (!edit) dragging = false;
-        resize(cfg.scale);
+        if (!dragging) applyRootPosition(0, 0);
 
-        var status = String(cfg.status || 'progress');
+        var status = String(currentCfg.status || 'progress');
         if (status === 'wasted') {
-            value.style.color = cfg.colorWasted || '#FE0E00';
-            value.textContent = cfg.showWastedText === false ? String(Math.max(0, Math.round(num(cfg.remaining, 0)))) : String(cfg.wastedText || 'Wasted!');
+            value.style.color = currentCfg.colorWasted || '#FE0E00';
+            value.textContent = currentCfg.showWastedText === false ? String(Math.max(0, Math.round(num(currentCfg.remaining, 0)))) : String(currentCfg.wastedText || 'Wasted!');
         } else if (status === 'done') {
-            value.style.color = cfg.colorDone || '#60FF00';
-            value.textContent = cfg.showDoneText === false ? '0' : String(cfg.doneText || 'Done!');
+            value.style.color = currentCfg.colorDone || '#60FF00';
+            value.textContent = currentCfg.showDoneText === false ? '0' : String(currentCfg.doneText || 'Done!');
         } else {
-            value.style.color = cfg.colorProgress || '#F8F400';
-            value.textContent = String(Math.max(0, Math.round(num(cfg.remaining, 0))));
+            value.style.color = currentCfg.colorProgress || '#F8F400';
+            value.textContent = String(Math.max(0, Math.round(num(currentCfg.remaining, 0))));
         }
     }
 
@@ -112,16 +126,13 @@
     function flushDrag() {
         dragFrame = null;
         if (!dragging) return;
-        sendDrag(dragDx, dragDy, false, false);
+        applyRootPosition(dragDx, dragDy);
     }
 
     function scheduleDrag() {
         if (dragFrame !== null) return;
-        if (window.requestAnimationFrame) {
-            dragFrame = window.requestAnimationFrame(flushDrag);
-        } else {
-            dragFrame = window.setTimeout(flushDrag, 16);
-        }
+        if (window.requestAnimationFrame) dragFrame = window.requestAnimationFrame(flushDrag);
+        else dragFrame = window.setTimeout(flushDrag, 16);
     }
 
     function onMouseDown(e) {
@@ -158,6 +169,7 @@
             } catch (ex) {}
             dragFrame = null;
         }
+        applyRootPosition(dragDx, dragDy);
         sendDrag(dragDx, dragDy, true, false);
         e.preventDefault();
         e.stopPropagation();
@@ -181,8 +193,8 @@
         window.setTimeout(tick, 500);
         if (window.engine) {
             window.engine.on('viewEnv.onDataChanged', tick);
-            window.engine.on('self.onScaleUpdated', function () { lastSize = null; tick(); });
-            window.engine.on('clientResized', function () { lastSize = null; tick(); });
+            window.engine.on('self.onScaleUpdated', function () { lastSurfaceSize = null; tick(); });
+            window.engine.on('clientResized', function () { lastSurfaceSize = null; tick(); });
         }
         if (!timer) timer = window.setInterval(tick, 250);
     }
@@ -201,6 +213,10 @@
                 status: 'progress',
                 remaining: 2137,
                 scale: 1,
+                offsetX: 380,
+                offsetY: 0,
+                screenWidth: 1920,
+                screenHeight: 1080,
                 dragEnabled: true,
                 editing: true,
                 colorProgress: '#F8F400',
