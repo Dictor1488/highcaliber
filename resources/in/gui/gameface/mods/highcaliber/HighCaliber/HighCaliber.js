@@ -55,14 +55,25 @@
         }
     }
 
+    function setInputEnabled(enabled) {
+        var mode = enabled ? 'auto' : 'none';
+        try { document.documentElement.style.pointerEvents = mode; } catch (e) {}
+        try { document.body.style.pointerEvents = mode; } catch (e) {}
+        if (root) root.style.pointerEvents = mode;
+    }
+
     function render(cfg) {
         if (cfg.visible !== true) {
-            root.className = 'hidden';
+            if (root) root.className = 'hidden';
+            setInputEnabled(false);
+            dragging = false;
             return;
         }
 
-        root.className = cfg.editing === true ? 'editing' : '';
-        root.style.pointerEvents = cfg.editing === true && cfg.dragEnabled !== false ? 'auto' : 'none';
+        var edit = cfg.editing === true && cfg.dragEnabled !== false;
+        root.className = edit ? 'editing' : '';
+        setInputEnabled(edit);
+        if (!edit) dragging = false;
         resize(cfg.scale);
 
         var status = String(cfg.status || 'progress');
@@ -101,6 +112,7 @@
         lastX = pointerX(e);
         lastY = pointerY(e);
         e.preventDefault();
+        e.stopPropagation();
     }
 
     function onMouseMove(e) {
@@ -113,6 +125,7 @@
         lastY = py;
         if (dx || dy) sendDrag(dx, dy, false);
         e.preventDefault();
+        e.stopPropagation();
     }
 
     function onMouseUp(e) {
@@ -120,6 +133,7 @@
         dragging = false;
         sendDrag(0, 0, true);
         e.preventDefault();
+        e.stopPropagation();
     }
 
     function tick() {
@@ -132,9 +146,9 @@
     }
 
     function initialize() {
-        if (root) root.addEventListener('mousedown', onMouseDown);
-        window.addEventListener('mousemove', onMouseMove);
-        window.addEventListener('mouseup', onMouseUp);
+        if (root) root.addEventListener('mousedown', onMouseDown, true);
+        window.addEventListener('mousemove', onMouseMove, true);
+        window.addEventListener('mouseup', onMouseUp, true);
         tick();
         window.setTimeout(tick, 100);
         window.setTimeout(tick, 500);
@@ -143,7 +157,7 @@
             window.engine.on('self.onScaleUpdated', function () { lastSize = null; tick(); });
             window.engine.on('clientResized', function () { lastSize = null; tick(); });
         }
-        if (!timer) timer = window.setInterval(tick, 1000);
+        if (!timer) timer = window.setInterval(tick, 250);
     }
 
     if (window.engine && window.engine.whenReady) {
