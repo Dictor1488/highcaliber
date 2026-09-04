@@ -5,7 +5,7 @@ Drag follows the working MARKS GameFace pattern:
 - GameFace only reports drag start/end.
 - Python reads GUI.mcursor() every frame while LMB is held.
 - The small Wulf window itself is moved directly.
-- No fullscreen GameFace surface and no per-mousemove JS/Python bridge.
+- Window/parent resize events reflow the panel after display mode changes.
 """
 
 import json
@@ -38,6 +38,9 @@ _drag_callback = None
 _drag_cursor_start = None
 _drag_window_start = None
 _drag_last_xy = None
+_resize_callback = None
+_bound_window = None
+_bound_parent = None
 
 
 def _save_config():
@@ -87,6 +90,19 @@ def _panel_size():
     return (_BASE_WIDTH * scale, _BASE_HEIGHT * scale)
 
 
+def _interface_scale(window):
+    """Physical pixels per logical Wulf unit, same model used by MARKS."""
+    try:
+        physical = _pair(GUI.screenResolution())
+        logical = _pair(getattr(getattr(window, 'parent', None), 'size', None))
+        if physical is None or logical is None or logical[0] <= 0 or logical[1] <= 0:
+            return 1.0
+        scale = ((physical[0] / logical[0]) + (physical[1] / logical[1])) * 0.5
+        return max(0.5, min(4.0, float(scale)))
+    except Exception:
+        return 1.0
+
+
 def _parent_size(window):
     try:
         size = _pair(getattr(getattr(window, 'parent', None), 'size', None))
@@ -100,19 +116,6 @@ def _parent_size(window):
         return (float(physical[0]) / scale, float(physical[1]) / scale)
     except Exception:
         return (1920.0, 1080.0)
-
-
-def _interface_scale(window):
-    """Physical pixels per logical Wulf unit, copied from MARKS logic."""
-    try:
-        physical = _pair(GUI.screenResolution())
-        logical = _pair(getattr(getattr(window, 'parent', None), 'size', None))
-        if physical is None or logical is None or logical[0] <= 0 or logical[1] <= 0:
-            return 1.0
-        scale = ((physical[0] / logical[0]) + (physical[1] / logical[1])) * 0.5
-        return max(0.5, min(4.0, float(scale)))
-    except Exception:
-        return 1.0
 
 
 def _clamp_xy(window, x, y):
@@ -169,8 +172,6 @@ def _apply_saved_position():
     try:
         x, y = _position_from_config(window)
         x, y = _move_window(window, x, y)
-        # Normalize old/bad coordinates immediately so a previous fullscreen
-        # build cannot leave the indicator outside the current logical screen.
         old_x = int(hc._CONFIG.get('offsetX', 380))
         old_y = int(hc._CONFIG.get('offsetY', 0))
         _config_from_position(window, x, y)
@@ -181,7 +182,6 @@ def _apply_saved_position():
 
 
 def _cursor_position_px():
-    """Exact cursor conversion used by MARKS."""
     resolution = GUI.screenResolution()
     width = float(resolution[0])
     height = float(resolution[1])
@@ -195,7 +195,6 @@ def _left_mouse_down():
         import Keys
         return bool(BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE))
     except Exception:
-        # JS mouseup still calls _drag_end if the key constant is unavailable.
         return True
 
 
@@ -256,7 +255,6 @@ def _drag_end():
         except Exception:
             pass
         _drag_callback = None
-
     if _drag_cursor_start is None:
         return
 
@@ -265,7 +263,6 @@ def _drag_end():
     _drag_cursor_start = None
     _drag_window_start = None
     _drag_last_xy = None
-
     if window is None or final_xy is None:
         return
     try:
@@ -288,6 +285,74 @@ def _push_edit_state():
             model.setEditing(bool(_editing))
     except Exception:
         hc._logger.exception('Failed to push High Caliber edit state')
+
+
+def _reflow_after_resize():
+    global _resize_callback
+    _resize_callback = None
+    try:
+        _apply_saved_position()
+        hc._push_ui()
+        _push_edit_state()
+        hc._logger.info('High Caliber reflowed after display resize')
+    except Exception:
+        hc._logger.exception('Failed to reflow High Caliber after display resize')
+
+
+def _schedule_resize_reflow(*args):
+    """Debounce Wulf resize storms caused by windowed/fullscreen switches."""
+    global _resize_callback
+    _drag_end()
+    if _resize_callback is not None:
+        try:
+            BigWorld.cancelCallback(_resize_callback)
+        except Exception:
+            pass
+    try:
+        # Let the main Wulf window finish applying its new logical size first.
+        _resize_callback = BigWorld.callback(0.15, _reflow_after_resize)
+    except Exception:
+        _resize_callback = None
+        _reflow_after_resize()
+
+
+def _detach_resize_hooks():
+    global _bound_window, _bound_parent
+    window = _bound_window
+    parent = _bound_parent
+    _bound_window = None
+    _bound_parent = None
+    if window is not None:
+        try:
+            window.onSizeChanged -= _schedule_resize_reflow
+        except Exception:
+            pass
+    if parent is not None:
+        try:
+            parent.onSizeChanged -= _schedule_resize_reflow
+        except Exception:
+            pass
+
+
+def _attach_resize_hooks(window):
+    global _bound_window, _bound_parent
+    if window is None:
+        return
+    if _bound_window is window:
+        return
+    _detach_resize_hooks()
+    _bound_window = window
+    try:
+        window.onSizeChanged += _schedule_resize_reflow
+    except Exception:
+        pass
+    try:
+        parent = getattr(window, 'parent', None)
+        if parent is not None:
+            parent.onSizeChanged += _schedule_resize_reflow
+            _bound_parent = parent
+    except Exception:
+        _bound_parent = None
 
 
 def _model_init(self, properties=2, commands=2):
@@ -327,6 +392,7 @@ def _view_push(self):
 
 def _window_ready(self):
     _orig_window_ready(self)
+    _attach_resize_hooks(self)
     try:
         BigWorld.callback(0.0, _apply_saved_position)
     except Exception:
@@ -403,7 +469,6 @@ def _schedule_ctrl_poll():
     global _ctrl_poll
     if _ctrl_poll is None:
         try:
-            # Backup only; InputHandler events are the primary path.
             _ctrl_poll = BigWorld.callback(0.05, _ctrl_poll_tick)
         except Exception:
             _ctrl_poll = None
@@ -463,12 +528,19 @@ def _install():
 
 
 def _restore():
-    global _installed, _editing
+    global _installed, _editing, _resize_callback
     if not _installed:
         return
 
     _drag_end()
     _stop_ctrl_poll()
+    _detach_resize_hooks()
+    if _resize_callback is not None:
+        try:
+            BigWorld.cancelCallback(_resize_callback)
+        except Exception:
+            pass
+        _resize_callback = None
 
     if InputHandler is not None:
         try:
