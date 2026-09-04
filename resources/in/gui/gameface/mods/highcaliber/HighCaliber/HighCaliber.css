@@ -1,0 +1,45 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 220px;
+  height: 56px;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+}
+
+#root {
+  width: 220px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  transform-origin: top left;
+  pointer-events: none;
+}
+
+#root.hidden {
+  display: none;
+}
+
+#icon {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  flex: 0 0 40px;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .95));
+}
+
+#value {
+  margin-left: 4px;
+  min-width: 130px;
+  font-family: Arial, sans-serif;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 40px;
+  white-space: nowrap;
+  text-shadow:
+    0 1px 1px rgba(0, 0, 0, 1),
+    0 0 4px rgba(0, 0, 0, .95),
+    0 0 7px rgba(0, 0, 0, .75);
+}
