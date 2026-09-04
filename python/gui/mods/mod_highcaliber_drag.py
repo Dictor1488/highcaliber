@@ -15,10 +15,8 @@ from frameworks.wulf import ViewModel
 from gui.mods import mod_highcaliber as hc
 
 # BigWorld / DirectInput scan codes used by WoT/XVM:
-# 29  = KEY_LCONTROL
-# 157 = KEY_RCONTROL
-# Do not depend on a Keys module: current WoT 2.4 client does not expose the
-# expected constants there on every build (the previous helper logged keys=[]).
+# 29  = left Ctrl
+# 157 = right Ctrl
 _CTRL_KEYS = (29, 157)
 
 _editing = False
@@ -28,6 +26,8 @@ _orig_model_initialize = None
 _orig_view_push = None
 _orig_process_shot_results = None
 _ctrl_poll = None
+_drag_base_x = None
+_drag_base_y = None
 
 
 def _save_config():
@@ -71,32 +71,45 @@ def _model_init(self, properties=1, commands=2):
 
 
 def _on_dragged(data=None, *args):
+    global _drag_base_x, _drag_base_y
     if not _editing or not hc._CONFIG.get('drag', True):
         return
     try:
         dx = float(data.get('dx', 0) or 0)
         dy = float(data.get('dy', 0) or 0)
         final = bool(data.get('final', False))
+        start = bool(data.get('start', False))
         game_scale = max(0.01, float(data.get('gameScale', 1.0) or 1.0))
     except Exception:
         return
 
-    hc._CONFIG['offsetX'] = int(round(hc._CONFIG.get('offsetX', 380) + dx / game_scale))
-    hc._CONFIG['offsetY'] = int(round(hc._CONFIG.get('offsetY', 0) + dy / game_scale))
+    if start or _drag_base_x is None or _drag_base_y is None:
+        _drag_base_x = int(hc._CONFIG.get('offsetX', 380))
+        _drag_base_y = int(hc._CONFIG.get('offsetY', 0))
+
+    hc._CONFIG['offsetX'] = int(round(_drag_base_x + dx / game_scale))
+    hc._CONFIG['offsetY'] = int(round(_drag_base_y + dy / game_scale))
 
     try:
         ui_scale = max(0.5, min(2.0, float(hc._CONFIG.get('scale', 1.0) or 1.0)))
-        surface_width = int(220 * game_scale * ui_scale + 0.999)
-        surface_height = int(56 * game_scale * ui_scale + 0.999)
+        surface_width = int(150 * game_scale * ui_scale + 0.999)
+        surface_height = int(40 * game_scale * ui_scale + 0.999)
+        # During the drag only move the Wulf window. Do not republish the
+        # payload on every mousemove: that was causing feedback/jitter.
         hc._move_window(surface_width, surface_height, game_scale)
-        hc._push_ui()
-        _push_edit_payload()
     except Exception:
         pass
 
     if final:
         _save_config()
         hc._logger.info('High Caliber position saved: x=%s y=%s', hc._CONFIG.get('offsetX'), hc._CONFIG.get('offsetY'))
+        _drag_base_x = None
+        _drag_base_y = None
+        try:
+            hc._push_ui()
+            _push_edit_payload()
+        except Exception:
+            pass
 
 
 def _model_initialize(self):
@@ -121,7 +134,6 @@ def _is_ctrl_event(event):
     key = _event_key(event)
     if key in _CTRL_KEYS:
         return True
-    # Some client event wrappers expose modifier state even when key differs.
     for name in ('isCtrlDown', 'isControlDown'):
         try:
             value = getattr(event, name, None)
@@ -145,25 +157,26 @@ def _ctrl_down_now():
 
 
 def _set_editing(value):
-    global _editing
+    global _editing, _drag_base_x, _drag_base_y
     value = bool(value and hc._CONFIG.get('drag', True) and hc._battle_ready_to_show())
     if _editing == value:
         return
     _editing = value
+    if not _editing:
+        _drag_base_x = None
+        _drag_base_y = None
     hc._logger.info('High Caliber edit mode: %s', _editing)
     _push_edit_payload()
 
 
 def _on_key_down(event):
     if _is_ctrl_event(event):
-        hc._logger.info('High Caliber Ctrl key down: key=%r', _event_key(event))
         _set_editing(True)
 
 
 def _on_key_up(event):
     key = _event_key(event)
     if key in _CTRL_KEYS:
-        hc._logger.info('High Caliber Ctrl key up: key=%r', key)
         _set_editing(_ctrl_down_now())
 
 
@@ -236,7 +249,7 @@ def _install():
 
 
 def _restore():
-    global _installed, _editing
+    global _installed, _editing, _drag_base_x, _drag_base_y
     if not _installed:
         return
 
@@ -262,6 +275,8 @@ def _restore():
         pass
 
     _editing = False
+    _drag_base_x = None
+    _drag_base_y = None
     _installed = False
 
 
