@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Ctrl-drag support and High Caliber shot-result compatibility fix."""
+"""Ctrl-drag support for the standalone High Caliber indicator."""
 
 import json
 import os
@@ -8,13 +8,18 @@ import BigWorld
 
 try:
     import InputHandler
-    import Keys
 except Exception:
     InputHandler = None
-    Keys = None
 
 from frameworks.wulf import ViewModel
 from gui.mods import mod_highcaliber as hc
+
+# BigWorld / DirectInput scan codes used by WoT/XVM:
+# 29  = KEY_LCONTROL
+# 157 = KEY_RCONTROL
+# Do not depend on a Keys module: current WoT 2.4 client does not expose the
+# expected constants there on every build (the previous helper logged keys=[]).
+_CTRL_KEYS = (29, 157)
 
 _editing = False
 _installed = False
@@ -62,8 +67,6 @@ def _push_edit_payload():
 
 
 def _model_init(self, properties=1, commands=2):
-    # The original model reserves one command. Reserve two so onDragged can be
-    # registered in addition to onResized.
     ViewModel.__init__(self, properties=properties, commands=2)
 
 
@@ -93,6 +96,7 @@ def _on_dragged(data=None, *args):
 
     if final:
         _save_config()
+        hc._logger.info('High Caliber position saved: x=%s y=%s', hc._CONFIG.get('offsetX'), hc._CONFIG.get('offsetY'))
 
 
 def _model_initialize(self):
@@ -106,28 +110,32 @@ def _view_push(self):
     _push_edit_payload()
 
 
-def _ctrl_keys():
-    if Keys is None:
-        return []
-    out = []
-    for name in ('KEY_LCONTROL', 'KEY_RCONTROL', 'KEY_CONTROL', 'KEY_LCTRL', 'KEY_RCTRL'):
-        value = getattr(Keys, name, None)
-        if value is not None and value not in out:
-            out.append(value)
-    return out
-
-
-def _is_ctrl(event):
-    if event is None:
-        return False
+def _event_key(event):
     try:
-        return event.key in _ctrl_keys()
+        return int(event.key)
     except Exception:
-        return False
+        return None
+
+
+def _is_ctrl_event(event):
+    key = _event_key(event)
+    if key in _CTRL_KEYS:
+        return True
+    # Some client event wrappers expose modifier state even when key differs.
+    for name in ('isCtrlDown', 'isControlDown'):
+        try:
+            value = getattr(event, name, None)
+            if callable(value) and value():
+                return True
+            if value is True:
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def _ctrl_down_now():
-    for key in _ctrl_keys():
+    for key in _CTRL_KEYS:
         try:
             if BigWorld.isKeyDown(key):
                 return True
@@ -147,13 +155,16 @@ def _set_editing(value):
 
 
 def _on_key_down(event):
-    if _is_ctrl(event):
+    if _is_ctrl_event(event):
+        hc._logger.info('High Caliber Ctrl key down: key=%r', _event_key(event))
         _set_editing(True)
 
 
 def _on_key_up(event):
-    if _is_ctrl(event):
-        _set_editing(False)
+    key = _event_key(event)
+    if key in _CTRL_KEYS:
+        hc._logger.info('High Caliber Ctrl key up: key=%r', key)
+        _set_editing(_ctrl_down_now())
 
 
 def _ctrl_poll_tick():
@@ -186,9 +197,6 @@ def _stop_ctrl_poll():
 
 
 def _fixed_process_shot_results(player, results):
-    # Base module now supports both the old packed-int result and WoT 2.4
-    # PyFixedDictDataInstance entries. Keep this wrapper only so old packages
-    # upgraded in-place still route through the compatible parser.
     try:
         return _orig_process_shot_results(player, results)
     except Exception:
@@ -223,7 +231,7 @@ def _install():
             hc._logger.exception('Failed to install High Caliber Ctrl input')
 
     _schedule_ctrl_poll()
-    hc._logger.info('High Caliber Ctrl-drag helper installed; keys=%r', _ctrl_keys())
+    hc._logger.info('High Caliber Ctrl-drag helper installed; keys=%r', _CTRL_KEYS)
     _installed = True
 
 
