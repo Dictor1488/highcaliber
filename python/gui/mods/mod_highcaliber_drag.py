@@ -87,8 +87,6 @@ def _on_dragged(data=None, *args):
         _drag_base_y = int(hc._CONFIG.get('offsetY', 0))
         return
 
-    # All visual motion happens entirely in GameFace JS. Python only commits
-    # the final delta after mouseup, so there is zero per-frame Wulf movement.
     if not final:
         return
 
@@ -191,7 +189,7 @@ def _schedule_ctrl_poll():
     global _ctrl_poll
     if _ctrl_poll is None:
         try:
-            _ctrl_poll = BigWorld.callback(0.05, _ctrl_poll_tick)
+            _ctrl_poll = BigWorld.callback(0.01, _ctrl_poll_tick)
         except Exception:
             _ctrl_poll = None
 
