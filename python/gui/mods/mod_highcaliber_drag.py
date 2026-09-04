@@ -45,6 +45,14 @@ def _view():
         return None
 
 
+def _window():
+    try:
+        listener = hc._listener
+        return None if listener is None else listener.window
+    except Exception:
+        return None
+
+
 def _push_edit_state():
     """Push only the Ctrl/edit bit. Do not rebuild the JSON HUD payload."""
     view = _view()
@@ -70,6 +78,28 @@ def _model_set_editing(self, value):
     self._setBool(1, bool(value))
 
 
+def _on_surface_resized(data=None, *args):
+    """Move the actual Wulf window to the GameFace surface origin.
+
+    In normal mode JS keeps the surface only as large as the 150x40 HUD item
+    and positions this Wulf window at the indicator coordinates. In edit mode
+    JS temporarily expands the surface fullscreen and sends x=y=0.
+    """
+    window = _window()
+    if window is None:
+        return
+    try:
+        x = int(round(float(data.get('x', 0) or 0)))
+        y = int(round(float(data.get('y', 0) or 0)))
+    except Exception:
+        x = 0
+        y = 0
+    try:
+        window.move(x, y)
+    except Exception:
+        pass
+
+
 def _on_dragged(data=None, *args):
     global _drag_base_x, _drag_base_y
     if not _editing or not hc._CONFIG.get('drag', True):
@@ -88,8 +118,7 @@ def _on_dragged(data=None, *args):
         _drag_base_y = int(hc._CONFIG.get('offsetY', 0))
         return
 
-    # All visual motion happens entirely in GameFace JS. Python only commits
-    # the final delta after mouseup, so there is zero per-frame Wulf movement.
+    # Visual motion is local in GameFace. Python only commits on mouseup.
     if not final:
         return
 
@@ -113,6 +142,12 @@ def _on_dragged(data=None, *args):
 def _model_initialize(self):
     _orig_model_initialize(self)
     self._addBoolProperty('editing', False)
+    # Core already created onResized. Add our position handler after the core
+    # handler; it intentionally overrides core's legacy window.move(0, 0).
+    try:
+        self.onResized += _on_surface_resized
+    except Exception:
+        pass
     self.onDragged = self._addCommand('onDragged')
     self.onDragged += _on_dragged
 
