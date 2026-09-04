@@ -4,6 +4,8 @@
 import json
 import os
 
+import BigWorld
+
 try:
     import InputHandler
     import Keys
@@ -11,7 +13,6 @@ except Exception:
     InputHandler = None
     Keys = None
 
-from constants import VEHICLE_HIT_FLAGS
 from frameworks.wulf import ViewModel
 from gui.mods import mod_highcaliber as hc
 
@@ -21,6 +22,7 @@ _orig_model_init = None
 _orig_model_initialize = None
 _orig_view_push = None
 _orig_process_shot_results = None
+_ctrl_poll = None
 
 
 def _save_config():
@@ -60,6 +62,8 @@ def _push_edit_payload():
 
 
 def _model_init(self, properties=1, commands=2):
+    # The original model reserves one command. Reserve two so onDragged can be
+    # registered in addition to onResized.
     ViewModel.__init__(self, properties=properties, commands=2)
 
 
@@ -102,26 +106,43 @@ def _view_push(self):
     _push_edit_payload()
 
 
+def _ctrl_keys():
+    if Keys is None:
+        return []
+    out = []
+    for name in ('KEY_LCONTROL', 'KEY_RCONTROL', 'KEY_CONTROL', 'KEY_LCTRL', 'KEY_RCTRL'):
+        value = getattr(Keys, name, None)
+        if value is not None and value not in out:
+            out.append(value)
+    return out
+
+
 def _is_ctrl(event):
-    if event is None or Keys is None:
+    if event is None:
         return False
     try:
-        key = event.key
+        return event.key in _ctrl_keys()
     except Exception:
         return False
-    for name in ('KEY_LCONTROL', 'KEY_RCONTROL', 'KEY_CONTROL'):
-        value = getattr(Keys, name, None)
-        if value is not None and key == value:
-            return True
+
+
+def _ctrl_down_now():
+    for key in _ctrl_keys():
+        try:
+            if BigWorld.isKeyDown(key):
+                return True
+        except Exception:
+            pass
     return False
 
 
 def _set_editing(value):
     global _editing
-    value = bool(value and hc._CONFIG.get('drag', True))
+    value = bool(value and hc._CONFIG.get('drag', True) and hc._battle_ready_to_show())
     if _editing == value:
         return
     _editing = value
+    hc._logger.info('High Caliber edit mode: %s', _editing)
     _push_edit_payload()
 
 
@@ -135,36 +156,41 @@ def _on_key_up(event):
         _set_editing(False)
 
 
-def _fixed_process_shot_results(player, results):
-    if hc._STATE.teamHit or not hc._CONFIG.get('enabled', True):
-        return
+def _ctrl_poll_tick():
+    global _ctrl_poll
+    _ctrl_poll = None
     try:
-        arena_vehicles = player.arena.vehicles
-        player_vehicle_id = player.playerVehicleID
-        player_team = player.team
-        hit_mask = (VEHICLE_HIT_FLAGS.IS_ANY_DAMAGE_MASK |
-                    VEHICLE_HIT_FLAGS.ATTACK_IS_DIRECT_PROJECTILE)
-        dead_before_mask = getattr(VEHICLE_HIT_FLAGS, 'VEHICLE_WAS_DEAD_BEFORE_ATTACK', 0)
+        _set_editing(_ctrl_down_now())
+    except Exception:
+        pass
+    _schedule_ctrl_poll()
 
-        for raw in results:
-            vehicle_id = (raw >> 32) & 0xFFFFFFFF
-            flags = raw & 0xFFFFFFFF
-            if dead_before_mask and flags & dead_before_mask:
-                continue
-            if vehicle_id == player_vehicle_id:
-                continue
-            vehicle = arena_vehicles.get(vehicle_id)
-            if not vehicle:
-                continue
-            if vehicle.get('team') != player_team:
-                continue
-            if not vehicle.get('isAlive', True):
-                continue
-            if flags & hit_mask:
-                if hc._STATE.markTeamHit():
-                    hc._push_ui()
-                    _push_edit_payload()
-                break
+
+def _schedule_ctrl_poll():
+    global _ctrl_poll
+    if _ctrl_poll is None:
+        try:
+            _ctrl_poll = BigWorld.callback(0.05, _ctrl_poll_tick)
+        except Exception:
+            _ctrl_poll = None
+
+
+def _stop_ctrl_poll():
+    global _ctrl_poll
+    if _ctrl_poll is not None:
+        try:
+            BigWorld.cancelCallback(_ctrl_poll)
+        except Exception:
+            pass
+    _ctrl_poll = None
+
+
+def _fixed_process_shot_results(player, results):
+    # Base module now supports both the old packed-int result and WoT 2.4
+    # PyFixedDictDataInstance entries. Keep this wrapper only so old packages
+    # upgraded in-place still route through the compatible parser.
+    try:
+        return _orig_process_shot_results(player, results)
     except Exception:
         hc._logger.exception('Failed to process friendly shot result')
 
@@ -196,6 +222,8 @@ def _install():
         except Exception:
             hc._logger.exception('Failed to install High Caliber Ctrl input')
 
+    _schedule_ctrl_poll()
+    hc._logger.info('High Caliber Ctrl-drag helper installed; keys=%r', _ctrl_keys())
     _installed = True
 
 
@@ -203,6 +231,8 @@ def _restore():
     global _installed, _editing
     if not _installed:
         return
+
+    _stop_ctrl_poll()
 
     if InputHandler is not None:
         try:
