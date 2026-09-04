@@ -76,11 +76,17 @@ def _on_dragged(data=None, *args):
 
     hc._CONFIG['offsetX'] = int(round(hc._CONFIG.get('offsetX', 380) + dx / game_scale))
     hc._CONFIG['offsetY'] = int(round(hc._CONFIG.get('offsetY', 0) + dy / game_scale))
+
     try:
+        ui_scale = max(0.5, min(2.0, float(hc._CONFIG.get('scale', 1.0) or 1.0)))
+        surface_width = int(220 * game_scale * ui_scale + 0.999)
+        surface_height = int(56 * game_scale * ui_scale + 0.999)
+        hc._move_window(surface_width, surface_height, game_scale)
         hc._push_ui()
         _push_edit_payload()
     except Exception:
         pass
+
     if final:
         _save_config()
 
