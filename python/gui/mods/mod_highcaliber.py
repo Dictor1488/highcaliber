@@ -23,7 +23,7 @@ from frameworks.wulf import ViewModel, ViewSettings, ViewFlags, WindowFlags, Win
 from gui.impl.pub import ViewImpl, WindowImpl
 from gui.battle_control.controllers import battle_field_ctrl, feedback_events
 from gui.battle_control.controllers.battle_field_ctrl import IBattleFieldListener
-from helpers import dependency
+from helpers import dependency, getClientLanguage
 from skeletons.gui.impl import IGuiLoader
 
 try:
@@ -73,6 +73,66 @@ def _safe_float(value, default=0.0):
         return float(value)
     except Exception:
         return default
+
+
+_STATUS_TEXTS = {
+    'en': (u'Done!', u'Wasted!'),
+    'ru': (u'Готово!', u'Потеряно!'),
+    'uk': (u'Готово!', u'Втрачено!'),
+    'ua': (u'Готово!', u'Втрачено!'),
+    'de': (u'Geschafft!', u'Verwirkt!'),
+    'pl': (u'Gotowe!', u'Utracone!'),
+    'cs': (u'Hotovo!', u'Ztraceno!'),
+    'sk': (u'Hotovo!', u'Stratené!'),
+    'fr': (u'Terminé !', u'Perdu !'),
+    'es': (u'¡Hecho!', u'¡Perdido!'),
+    'it': (u'Fatto!', u'Perso!'),
+    'pt': (u'Concluído!', u'Perdido!'),
+    'pt_br': (u'Concluído!', u'Perdido!'),
+    'tr': (u'Tamam!', u'Kaybedildi!'),
+    'hu': (u'Kész!', u'Elveszett!'),
+    'ro': (u'Gata!', u'Pierdut!'),
+    'bg': (u'Готово!', u'Загубено!'),
+    'sr': (u'Готово!', u'Изгубљено!'),
+    'hr': (u'Gotovo!', u'Izgubljeno!'),
+    'sl': (u'Končano!', u'Izgubljeno!'),
+    'nl': (u'Klaar!', u'Verloren!'),
+    'sv': (u'Klart!', u'Förlorad!'),
+    'no': (u'Ferdig!', u'Tapt!'),
+    'da': (u'Færdig!', u'Tabt!'),
+    'fi': (u'Valmis!', u'Menetetty!'),
+    'el': (u'Έτοιμο!', u'Χάθηκε!'),
+    'et': (u'Valmis!', u'Kaotatud!'),
+    'lv': (u'Gatavs!', u'Zaudēts!'),
+    'lt': (u'Baigta!', u'Prarasta!'),
+    'zh': (u'完成！', u'已失效！'),
+    'zh_cn': (u'完成！', u'已失效！'),
+    'zh_tw': (u'完成！', u'已失效！'),
+    'ja': (u'達成！', u'失効！'),
+    'ko': (u'완료!', u'상실!'),
+    'th': (u'สำเร็จ!', u'เสียสิทธิ์!'),
+    'vi': (u'Hoàn tất!', u'Đã mất!')
+}
+
+
+def _client_language():
+    try:
+        language = unicode(getClientLanguage() or 'en').strip().lower()
+    except Exception:
+        try:
+            language = str(getClientLanguage() or 'en').strip().lower()
+        except Exception:
+            language = 'en'
+    return language.replace('-', '_')
+
+
+def _status_texts():
+    language = _client_language()
+    texts = _STATUS_TEXTS.get(language)
+    if texts is not None:
+        return texts
+    root = language.split('_', 1)[0]
+    return _STATUS_TEXTS.get(root, _STATUS_TEXTS['en'])
 
 
 def _load_config():
@@ -203,6 +263,7 @@ class HighCaliberView(ViewImpl):
 
     def push(self):
         status = _STATE.status()
+        doneText, wastedText = _status_texts()
         payload = {
             'visible': bool(_CONFIG.get('enabled', True) and _STATE.ready),
             'status': status,
@@ -212,6 +273,8 @@ class HighCaliberView(ViewImpl):
             'scale': _CONFIG.get('scale', 1.0),
             'showDoneText': bool(_CONFIG.get('showDoneText', True)),
             'showWastedText': bool(_CONFIG.get('showWastedText', True)),
+            'doneText': doneText,
+            'wastedText': wastedText,
             'colorProgress': _CONFIG.get('colorProgress', '#F8F400'),
             'colorDone': _CONFIG.get('colorDone', '#60FF00'),
             'colorWasted': _CONFIG.get('colorWasted', '#FE0E00')
@@ -519,15 +582,12 @@ def _shutdown():
 def init():
     try:
         _load_config()
-        if not _CONFIG.get('enabled', True):
-            return
         if not _OPENWG_OK:
-            _logger.error('OpenWG.Gameface is not available; High Caliber UI cannot start')
+            _logger.error('OpenWG.Gameface is unavailable')
             return
         _install_hooks()
-        _logger.info('INQ High Caliber loaded, version=%s', __version__)
     except Exception:
-        _logger.exception('INQ High Caliber init failed')
+        _logger.exception('High Caliber init failed')
 
 
 def fini():
@@ -535,7 +595,7 @@ def fini():
         _shutdown()
         _restore_hooks()
     except Exception:
-        _logger.exception('INQ High Caliber fini failed')
+        _logger.exception('High Caliber fini failed')
 
 
 def onDisconnected():
