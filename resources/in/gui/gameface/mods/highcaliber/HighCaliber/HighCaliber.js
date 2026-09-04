@@ -37,6 +37,22 @@
         return 1;
     }
 
+    function screenWidth() {
+        return Math.max(1, num(currentCfg.screenWidth, 1920));
+    }
+
+    function screenHeight() {
+        return Math.max(1, num(currentCfg.screenHeight, 1080));
+    }
+
+    function scaledWidth() {
+        return BASE_WIDTH * currentScale;
+    }
+
+    function scaledHeight() {
+        return BASE_HEIGHT * currentScale;
+    }
+
     function resizeSurface(cfg) {
         var width = Math.max(1, Math.round(num(cfg.screenWidth, 1920)));
         var height = Math.max(1, Math.round(num(cfg.screenHeight, 1080)));
@@ -57,17 +73,33 @@
         var uiScale = clamp(num(cfg.scale, 1), 0.5, 2.0);
         currentScale = nativeScale * uiScale;
         var screenW = Math.max(1, num(cfg.screenWidth, 1920));
+        var screenH = Math.max(1, num(cfg.screenHeight, 1080));
         var offsetX = num(cfg.offsetX, 380);
         var offsetY = num(cfg.offsetY, 0);
-        baseLeft = Math.round((screenW - BASE_WIDTH * currentScale) / 2 + offsetX * nativeScale);
-        baseTop = Math.max(0, Math.round(offsetY * nativeScale));
+        var maxLeft = Math.max(0, screenW - BASE_WIDTH * currentScale);
+        var maxTop = Math.max(0, screenH - BASE_HEIGHT * currentScale);
+        baseLeft = clamp(Math.round((screenW - BASE_WIDTH * currentScale) / 2 + offsetX * nativeScale), 0, maxLeft);
+        baseTop = clamp(Math.round(offsetY * nativeScale), 0, maxTop);
+    }
+
+    function clampDragOffset(dx, dy) {
+        var maxLeft = Math.max(0, screenWidth() - scaledWidth());
+        var maxTop = Math.max(0, screenHeight() - scaledHeight());
+        var left = clamp(baseLeft + dx, 0, maxLeft);
+        var top = clamp(baseTop + dy, 0, maxTop);
+        return {
+            dx: left - baseLeft,
+            dy: top - baseTop
+        };
     }
 
     function applyRootPosition(dx, dy) {
-        if (!root) return;
-        root.style.left = Math.round(baseLeft + dx) + 'px';
-        root.style.top = Math.round(baseTop + dy) + 'px';
+        if (!root) return { dx: 0, dy: 0 };
+        var limited = clampDragOffset(dx, dy);
+        root.style.left = Math.round(baseLeft + limited.dx) + 'px';
+        root.style.top = Math.round(baseTop + limited.dy) + 'px';
         root.style.transform = 'scale(' + currentScale + ')';
+        return limited;
     }
 
     function setInputEnabled(enabled) {
@@ -126,7 +158,9 @@
     function flushDrag() {
         dragFrame = null;
         if (!dragging) return;
-        applyRootPosition(dragDx, dragDy);
+        var limited = applyRootPosition(dragDx, dragDy);
+        dragDx = limited.dx;
+        dragDy = limited.dy;
     }
 
     function scheduleDrag() {
@@ -150,8 +184,11 @@
 
     function onMouseMove(e) {
         if (!dragging) return;
-        dragDx = pointerX(e) - dragStartX;
-        dragDy = pointerY(e) - dragStartY;
+        var rawDx = pointerX(e) - dragStartX;
+        var rawDy = pointerY(e) - dragStartY;
+        var limited = clampDragOffset(rawDx, rawDy);
+        dragDx = limited.dx;
+        dragDy = limited.dy;
         scheduleDrag();
         e.preventDefault();
         e.stopPropagation();
@@ -159,8 +196,11 @@
 
     function onMouseUp(e) {
         if (!dragging) return;
-        dragDx = pointerX(e) - dragStartX;
-        dragDy = pointerY(e) - dragStartY;
+        var rawDx = pointerX(e) - dragStartX;
+        var rawDy = pointerY(e) - dragStartY;
+        var limited = clampDragOffset(rawDx, rawDy);
+        dragDx = limited.dx;
+        dragDy = limited.dy;
         dragging = false;
         if (dragFrame !== null) {
             try {
