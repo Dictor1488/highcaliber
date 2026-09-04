@@ -14,9 +14,6 @@ except Exception:
 from frameworks.wulf import ViewModel
 from gui.mods import mod_highcaliber as hc
 
-# BigWorld / DirectInput scan codes used by WoT/XVM:
-# 29  = left Ctrl
-# 157 = right Ctrl
 _CTRL_KEYS = (29, 157)
 
 _editing = False
@@ -59,6 +56,8 @@ def _push_edit_payload():
             return
         data['dragEnabled'] = bool(hc._CONFIG.get('drag', True))
         data['editing'] = bool(_editing)
+        data['offsetX'] = hc._CONFIG.get('offsetX', 380)
+        data['offsetY'] = hc._CONFIG.get('offsetY', 0)
         updated = json.dumps(data, separators=(',', ':'), sort_keys=True)
         with view.viewModel.transaction() as model:
             model.setPayload(updated)
@@ -83,33 +82,31 @@ def _on_dragged(data=None, *args):
     except Exception:
         return
 
-    if start or _drag_base_x is None or _drag_base_y is None:
+    if start:
+        _drag_base_x = int(hc._CONFIG.get('offsetX', 380))
+        _drag_base_y = int(hc._CONFIG.get('offsetY', 0))
+        return
+
+    # All visual motion happens entirely in GameFace JS. Python only commits
+    # the final delta after mouseup, so there is zero per-frame Wulf movement.
+    if not final:
+        return
+
+    if _drag_base_x is None or _drag_base_y is None:
         _drag_base_x = int(hc._CONFIG.get('offsetX', 380))
         _drag_base_y = int(hc._CONFIG.get('offsetY', 0))
 
     hc._CONFIG['offsetX'] = int(round(_drag_base_x + dx / game_scale))
     hc._CONFIG['offsetY'] = int(round(_drag_base_y + dy / game_scale))
-
+    _save_config()
+    hc._logger.info('High Caliber position saved: x=%s y=%s', hc._CONFIG.get('offsetX'), hc._CONFIG.get('offsetY'))
+    _drag_base_x = None
+    _drag_base_y = None
     try:
-        ui_scale = max(0.5, min(2.0, float(hc._CONFIG.get('scale', 1.0) or 1.0)))
-        surface_width = int(150 * game_scale * ui_scale + 0.999)
-        surface_height = int(40 * game_scale * ui_scale + 0.999)
-        # During the drag only move the Wulf window. Do not republish the
-        # payload on every mousemove: that was causing feedback/jitter.
-        hc._move_window(surface_width, surface_height, game_scale)
+        hc._push_ui()
+        _push_edit_payload()
     except Exception:
         pass
-
-    if final:
-        _save_config()
-        hc._logger.info('High Caliber position saved: x=%s y=%s', hc._CONFIG.get('offsetX'), hc._CONFIG.get('offsetY'))
-        _drag_base_x = None
-        _drag_base_y = None
-        try:
-            hc._push_ui()
-            _push_edit_payload()
-        except Exception:
-            pass
 
 
 def _model_initialize(self):
