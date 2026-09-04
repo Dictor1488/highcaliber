@@ -64,10 +64,10 @@
         var status = String(cfg.status || 'progress');
         if (status === 'wasted') {
             value.style.color = cfg.colorWasted || '#FE0E00';
-            value.textContent = cfg.showWastedText === false ? String(Math.max(0, Math.round(num(cfg.remaining, 0)))) : 'Wasted!';
+            value.textContent = cfg.showWastedText === false ? String(Math.max(0, Math.round(num(cfg.remaining, 0)))) : String(cfg.wastedText || 'Wasted!');
         } else if (status === 'done') {
             value.style.color = cfg.colorDone || '#60FF00';
-            value.textContent = cfg.showDoneText === false ? '0' : 'Done!';
+            value.textContent = cfg.showDoneText === false ? '0' : String(cfg.doneText || 'Done!');
         } else {
             value.style.color = cfg.colorProgress || '#F8F400';
             value.textContent = String(Math.max(0, Math.round(num(cfg.remaining, 0))));
@@ -111,7 +111,9 @@
                 scale: 1,
                 colorProgress: '#F8F400',
                 colorDone: '#60FF00',
-                colorWasted: '#FE0E00'
+                colorWasted: '#FE0E00',
+                doneText: 'Done!',
+                wastedText: 'Wasted!'
             })
         };
         initialize();
