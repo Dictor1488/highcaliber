@@ -43,3 +43,10 @@ html, body {
     0 0 4px rgba(0, 0, 0, .95),
     0 0 7px rgba(0, 0, 0, .75);
 }
+
+#root.editing {
+  outline: 1px dashed rgba(255, 255, 255, .9);
+  outline-offset: -2px;
+  background: rgba(0, 0, 0, .18);
+  cursor: move;
+}
