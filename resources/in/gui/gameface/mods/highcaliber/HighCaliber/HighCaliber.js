@@ -1,16 +1,19 @@
 (function () {
     'use strict';
 
-    var BASE_WIDTH = 220;
-    var BASE_HEIGHT = 56;
+    var BASE_WIDTH = 150;
+    var BASE_HEIGHT = 40;
     var root = document.getElementById('root');
     var value = document.getElementById('value');
     var lastPayload = null;
     var lastSize = null;
     var timer = null;
     var dragging = false;
-    var lastX = 0;
-    var lastY = 0;
+    var dragStartX = 0;
+    var dragStartY = 0;
+    var dragDx = 0;
+    var dragDy = 0;
+    var dragFrame = null;
 
     function num(v, d) {
         v = Number(v);
@@ -89,13 +92,14 @@
         }
     }
 
-    function sendDrag(dx, dy, final) {
+    function sendDrag(dx, dy, final, start) {
         try {
             if (window.model && typeof window.model.onDragged === 'function') {
                 window.model.onDragged({
                     dx: dx,
                     dy: dy,
                     final: final === true,
+                    start: start === true,
                     gameScale: gameUiScale()
                 });
             }
@@ -105,33 +109,56 @@
     function pointerX(e) { return typeof e.screenX === 'number' ? e.screenX : e.clientX; }
     function pointerY(e) { return typeof e.screenY === 'number' ? e.screenY : e.clientY; }
 
+    function flushDrag() {
+        dragFrame = null;
+        if (!dragging) return;
+        sendDrag(dragDx, dragDy, false, false);
+    }
+
+    function scheduleDrag() {
+        if (dragFrame !== null) return;
+        if (window.requestAnimationFrame) {
+            dragFrame = window.requestAnimationFrame(flushDrag);
+        } else {
+            dragFrame = window.setTimeout(flushDrag, 16);
+        }
+    }
+
     function onMouseDown(e) {
         if (!root || root.className.indexOf('editing') < 0) return;
         if (e.button !== 0) return;
         dragging = true;
-        lastX = pointerX(e);
-        lastY = pointerY(e);
+        dragStartX = pointerX(e);
+        dragStartY = pointerY(e);
+        dragDx = 0;
+        dragDy = 0;
+        sendDrag(0, 0, false, true);
         e.preventDefault();
         e.stopPropagation();
     }
 
     function onMouseMove(e) {
         if (!dragging) return;
-        var px = pointerX(e);
-        var py = pointerY(e);
-        var dx = px - lastX;
-        var dy = py - lastY;
-        lastX = px;
-        lastY = py;
-        if (dx || dy) sendDrag(dx, dy, false);
+        dragDx = pointerX(e) - dragStartX;
+        dragDy = pointerY(e) - dragStartY;
+        scheduleDrag();
         e.preventDefault();
         e.stopPropagation();
     }
 
     function onMouseUp(e) {
         if (!dragging) return;
+        dragDx = pointerX(e) - dragStartX;
+        dragDy = pointerY(e) - dragStartY;
         dragging = false;
-        sendDrag(0, 0, true);
+        if (dragFrame !== null) {
+            try {
+                if (window.cancelAnimationFrame) window.cancelAnimationFrame(dragFrame);
+                else window.clearTimeout(dragFrame);
+            } catch (ex) {}
+            dragFrame = null;
+        }
+        sendDrag(dragDx, dragDy, true, false);
         e.preventDefault();
         e.stopPropagation();
     }
