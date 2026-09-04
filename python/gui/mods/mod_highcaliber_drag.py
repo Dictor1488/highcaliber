@@ -45,28 +45,29 @@ def _view():
         return None
 
 
-def _push_edit_payload():
+def _push_edit_state():
+    """Push only the Ctrl/edit bit. Do not rebuild the JSON HUD payload."""
     view = _view()
     if view is None:
         return
     try:
-        raw = view.viewModel.getPayload()
-        data = json.loads(raw or '{}')
-        if not isinstance(data, dict):
-            return
-        data['dragEnabled'] = bool(hc._CONFIG.get('drag', True))
-        data['editing'] = bool(_editing)
-        data['offsetX'] = hc._CONFIG.get('offsetX', 380)
-        data['offsetY'] = hc._CONFIG.get('offsetY', 0)
-        updated = json.dumps(data, separators=(',', ':'), sort_keys=True)
         with view.viewModel.transaction() as model:
-            model.setPayload(updated)
+            model.setEditing(bool(_editing))
     except Exception:
         hc._logger.exception('Failed to push High Caliber edit state')
 
 
-def _model_init(self, properties=1, commands=2):
-    ViewModel.__init__(self, properties=properties, commands=2)
+def _model_init(self, properties=2, commands=2):
+    # payload is property 0, editing is property 1.
+    ViewModel.__init__(self, properties=2, commands=2)
+
+
+def _model_get_editing(self):
+    return self._getBool(1)
+
+
+def _model_set_editing(self, value):
+    self._setBool(1, bool(value))
 
 
 def _on_dragged(data=None, *args):
@@ -87,6 +88,8 @@ def _on_dragged(data=None, *args):
         _drag_base_y = int(hc._CONFIG.get('offsetY', 0))
         return
 
+    # All visual motion happens entirely in GameFace JS. Python only commits
+    # the final delta after mouseup, so there is zero per-frame Wulf movement.
     if not final:
         return
 
@@ -102,20 +105,21 @@ def _on_dragged(data=None, *args):
     _drag_base_y = None
     try:
         hc._push_ui()
-        _push_edit_payload()
+        _push_edit_state()
     except Exception:
         pass
 
 
 def _model_initialize(self):
     _orig_model_initialize(self)
+    self._addBoolProperty('editing', False)
     self.onDragged = self._addCommand('onDragged')
     self.onDragged += _on_dragged
 
 
 def _view_push(self):
     _orig_view_push(self)
-    _push_edit_payload()
+    _push_edit_state()
 
 
 def _event_key(event):
@@ -161,7 +165,7 @@ def _set_editing(value):
         _drag_base_x = None
         _drag_base_y = None
     hc._logger.info('High Caliber edit mode: %s', _editing)
-    _push_edit_payload()
+    _push_edit_state()
 
 
 def _on_key_down(event):
@@ -189,7 +193,8 @@ def _schedule_ctrl_poll():
     global _ctrl_poll
     if _ctrl_poll is None:
         try:
-            _ctrl_poll = BigWorld.callback(0.01, _ctrl_poll_tick)
+            # Backup only. InputHandler events are the primary path.
+            _ctrl_poll = BigWorld.callback(0.05, _ctrl_poll_tick)
         except Exception:
             _ctrl_poll = None
 
@@ -228,6 +233,8 @@ def _install():
 
     hc.HighCaliberModel.__init__ = _model_init
     hc.HighCaliberModel._initialize = _model_initialize
+    hc.HighCaliberModel.getEditing = _model_get_editing
+    hc.HighCaliberModel.setEditing = _model_set_editing
     hc.HighCaliberView.push = _view_push
     hc._process_shot_results = _fixed_process_shot_results
 
