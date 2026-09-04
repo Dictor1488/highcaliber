@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """Ctrl-drag support for the standalone High Caliber indicator.
 
-Drag follows the working MARKS GameFace pattern:
-- GameFace only reports drag start/end.
-- Python reads GUI.mcursor() every frame while LMB is held.
-- The small Wulf window itself is moved directly.
-- Window/parent resize events reflow the panel after display mode changes.
+The indicator is intentionally isolated from unrelated battle HUD events:
+- only its own Ctrl edit state enables interaction;
+- GameFace only reports drag start/end from the indicator itself;
+- Python reads GUI.mcursor() while that drag is active;
+- no parent/window resize, ears, HUD layout, or other UI events are observed.
 """
 
 import json
@@ -38,9 +38,6 @@ _drag_callback = None
 _drag_cursor_start = None
 _drag_window_start = None
 _drag_last_xy = None
-_resize_callback = None
-_bound_window = None
-_bound_parent = None
 
 
 def _save_config():
@@ -91,7 +88,6 @@ def _panel_size():
 
 
 def _interface_scale(window):
-    """Physical pixels per logical Wulf unit, same model used by MARKS."""
     try:
         physical = _pair(GUI.screenResolution())
         logical = _pair(getattr(getattr(window, 'parent', None), 'size', None))
@@ -287,74 +283,6 @@ def _push_edit_state():
         hc._logger.exception('Failed to push High Caliber edit state')
 
 
-def _reflow_after_resize():
-    global _resize_callback
-    _resize_callback = None
-    try:
-        _apply_saved_position()
-        hc._push_ui()
-        _push_edit_state()
-        hc._logger.info('High Caliber reflowed after display resize')
-    except Exception:
-        hc._logger.exception('Failed to reflow High Caliber after display resize')
-
-
-def _schedule_resize_reflow(*args):
-    """Debounce Wulf resize storms caused by windowed/fullscreen switches."""
-    global _resize_callback
-    _drag_end()
-    if _resize_callback is not None:
-        try:
-            BigWorld.cancelCallback(_resize_callback)
-        except Exception:
-            pass
-    try:
-        # Let the main Wulf window finish applying its new logical size first.
-        _resize_callback = BigWorld.callback(0.15, _reflow_after_resize)
-    except Exception:
-        _resize_callback = None
-        _reflow_after_resize()
-
-
-def _detach_resize_hooks():
-    global _bound_window, _bound_parent
-    window = _bound_window
-    parent = _bound_parent
-    _bound_window = None
-    _bound_parent = None
-    if window is not None:
-        try:
-            window.onSizeChanged -= _schedule_resize_reflow
-        except Exception:
-            pass
-    if parent is not None:
-        try:
-            parent.onSizeChanged -= _schedule_resize_reflow
-        except Exception:
-            pass
-
-
-def _attach_resize_hooks(window):
-    global _bound_window, _bound_parent
-    if window is None:
-        return
-    if _bound_window is window:
-        return
-    _detach_resize_hooks()
-    _bound_window = window
-    try:
-        window.onSizeChanged += _schedule_resize_reflow
-    except Exception:
-        pass
-    try:
-        parent = getattr(window, 'parent', None)
-        if parent is not None:
-            parent.onSizeChanged += _schedule_resize_reflow
-            _bound_parent = parent
-    except Exception:
-        _bound_parent = None
-
-
 def _model_init(self, properties=2, commands=2):
     ViewModel.__init__(self, properties=2, commands=2)
 
@@ -392,7 +320,6 @@ def _view_push(self):
 
 def _window_ready(self):
     _orig_window_ready(self)
-    _attach_resize_hooks(self)
     try:
         BigWorld.callback(0.0, _apply_saved_position)
     except Exception:
@@ -523,24 +450,17 @@ def _install():
             hc._logger.exception('Failed to install High Caliber Ctrl input')
 
     _schedule_ctrl_poll()
-    hc._logger.info('High Caliber MARKS-style Ctrl-drag installed; keys=%r', _CTRL_KEYS)
+    hc._logger.info('High Caliber isolated Ctrl-drag installed; keys=%r', _CTRL_KEYS)
     _installed = True
 
 
 def _restore():
-    global _installed, _editing, _resize_callback
+    global _installed, _editing
     if not _installed:
         return
 
     _drag_end()
     _stop_ctrl_poll()
-    _detach_resize_hooks()
-    if _resize_callback is not None:
-        try:
-            BigWorld.cancelCallback(_resize_callback)
-        except Exception:
-            pass
-        _resize_callback = None
 
     if InputHandler is not None:
         try:
