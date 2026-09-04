@@ -7,7 +7,9 @@
     var value = document.getElementById('value');
     var lastPayload = null;
     var lastSurfaceSize = null;
-    var timer = null;
+    var payloadTimer = null;
+    var editFrame = null;
+    var lastEditing = null;
     var dragging = false;
     var dragStartX = 0;
     var dragStartY = 0;
@@ -87,10 +89,7 @@
         var maxTop = Math.max(0, screenHeight() - scaledHeight());
         var left = clamp(baseLeft + dx, 0, maxLeft);
         var top = clamp(baseTop + dy, 0, maxTop);
-        return {
-            dx: left - baseLeft,
-            dy: top - baseTop
-        };
+        return { dx: left - baseLeft, dy: top - baseTop };
     }
 
     function applyRootPosition(dx, dy) {
@@ -108,6 +107,31 @@
         if (root) root.style.pointerEvents = enabled ? 'auto' : 'none';
     }
 
+    function modelEditing() {
+        try {
+            return window.model && window.model.editing === true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function syncEditing(force) {
+        var visible = currentCfg.visible === true;
+        var edit = visible && currentCfg.dragEnabled !== false && modelEditing();
+        if (!force && edit === lastEditing) return;
+        lastEditing = edit;
+        if (!root) return;
+        root.className = visible ? (edit ? 'editing' : '') : 'hidden';
+        setInputEnabled(edit);
+        if (!edit) dragging = false;
+    }
+
+    function editingLoop() {
+        syncEditing(false);
+        if (window.requestAnimationFrame) editFrame = window.requestAnimationFrame(editingLoop);
+        else editFrame = window.setTimeout(editingLoop, 16);
+    }
+
     function render(cfg) {
         currentCfg = cfg || {};
         resizeSurface(currentCfg);
@@ -117,13 +141,12 @@
             if (root) root.className = 'hidden';
             setInputEnabled(false);
             dragging = false;
+            lastEditing = null;
             return;
         }
 
-        var edit = currentCfg.editing === true && currentCfg.dragEnabled !== false;
-        root.className = edit ? 'editing' : '';
-        setInputEnabled(edit);
         if (!dragging) applyRootPosition(0, 0);
+        syncEditing(true);
 
         var status = String(currentCfg.status || 'progress');
         if (status === 'wasted') {
@@ -141,13 +164,7 @@
     function sendDrag(dx, dy, final, start) {
         try {
             if (window.model && typeof window.model.onDragged === 'function') {
-                window.model.onDragged({
-                    dx: dx,
-                    dy: dy,
-                    final: final === true,
-                    start: start === true,
-                    gameScale: gameUiScale()
-                });
+                window.model.onDragged({ dx: dx, dy: dy, final: final === true, start: start === true, gameScale: gameUiScale() });
             }
         } catch (e) {}
     }
@@ -184,9 +201,7 @@
 
     function onMouseMove(e) {
         if (!dragging) return;
-        var rawDx = pointerX(e) - dragStartX;
-        var rawDy = pointerY(e) - dragStartY;
-        var limited = clampDragOffset(rawDx, rawDy);
+        var limited = clampDragOffset(pointerX(e) - dragStartX, pointerY(e) - dragStartY);
         dragDx = limited.dx;
         dragDy = limited.dy;
         scheduleDrag();
@@ -196,9 +211,7 @@
 
     function onMouseUp(e) {
         if (!dragging) return;
-        var rawDx = pointerX(e) - dragStartX;
-        var rawDy = pointerY(e) - dragStartY;
-        var limited = clampDragOffset(rawDx, rawDy);
+        var limited = clampDragOffset(pointerX(e) - dragStartX, pointerY(e) - dragStartY);
         dragDx = limited.dx;
         dragDy = limited.dy;
         dragging = false;
@@ -229,14 +242,17 @@
         window.addEventListener('mousemove', onMouseMove, true);
         window.addEventListener('mouseup', onMouseUp, true);
         tick();
-        window.setTimeout(tick, 100);
-        window.setTimeout(tick, 500);
+        syncEditing(true);
         if (window.engine) {
-            window.engine.on('viewEnv.onDataChanged', tick);
+            window.engine.on('viewEnv.onDataChanged', function () {
+                tick();
+                syncEditing(true);
+            });
             window.engine.on('self.onScaleUpdated', function () { lastSurfaceSize = null; tick(); });
             window.engine.on('clientResized', function () { lastSurfaceSize = null; tick(); });
         }
-        if (!timer) timer = window.setInterval(tick, 16);
+        if (!payloadTimer) payloadTimer = window.setInterval(tick, 100);
+        if (!editFrame) editingLoop();
     }
 
     if (window.engine && window.engine.whenReady) {
@@ -248,6 +264,7 @@
         });
     } else {
         window.model = {
+            editing: true,
             payload: JSON.stringify({
                 visible: true,
                 status: 'progress',
@@ -258,7 +275,6 @@
                 screenWidth: 1920,
                 screenHeight: 1080,
                 dragEnabled: true,
-                editing: true,
                 colorProgress: '#F8F400',
                 colorDone: '#60FF00',
                 colorWasted: '#FE0E00',
