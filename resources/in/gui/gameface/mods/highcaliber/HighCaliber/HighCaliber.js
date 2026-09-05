@@ -3,7 +3,6 @@ import { ModelObserver } from "../../libs/model.js";
 const observer = ModelObserver();
 const BASE_WIDTH = 150;
 const BASE_HEIGHT = 40;
-const SURFACE_REASSERT_MS = 4000;
 const root = document.getElementById('root');
 const value = document.getElementById('value');
 let currentCfg = {};
@@ -78,9 +77,6 @@ function renderModel(model) {
     const editChanged = lastEditing === null || editing !== lastEditing;
     lastEditing = editing;
 
-    /* Reassert on our own Ctrl edge too. If Ctrl is pressed during the short
-       startup interval before the engine's size deadline settles, the panel
-       repairs itself immediately without observing any HUD/layout event. */
     resizeStableSurface(editChanged);
 
     if (root) {
@@ -107,15 +103,16 @@ function renderModel(model) {
     }
 }
 
-engine.whenReady.then(function () {
-    /* WoT GameFace has a late default-size fallback after its size-calculation
-       deadline. MARKS and other standalone widgets therefore push once now and
-       once after that deadline; this is a one-shot startup repair, not polling. */
-    resizeStableSurface(true);
-    window.setTimeout(function () {
-        resizeStableSurface(true);
-    }, SURFACE_REASSERT_MS);
+/* Prime the native GameFace surface as soon as this module executes instead
+   of waiting for engine.whenReady. The CSS dimensions are already fixed, so
+   there is no reason to enter GameFace's automatic size-calculation path. */
+resizeStableSurface(true);
 
+engine.whenReady.then(function () {
+    /* Reassert once when the model bridge is ready in case viewEnv was not yet
+       exposed during module evaluation. This is a deterministic fallback, not
+       a delayed timer/poll. */
+    resizeStableSurface(true);
     observer.onUpdate(renderModel);
     observer.subscribe();
     renderModel(observer.model);
