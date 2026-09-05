@@ -7,6 +7,7 @@ const root = document.getElementById('root');
 const value = document.getElementById('value');
 let currentCfg = {};
 let lastSurfaceKey = null;
+let lastEditing = null;
 
 function num(v, d) {
     v = Number(v);
@@ -68,8 +69,12 @@ function renderModel(model) {
     currentCfg = parsePayload(model);
     const visible = currentCfg.visible === true;
     const editing = visible && currentCfg.dragEnabled !== false && !!(model && model.editing);
+    const editChanged = lastEditing === null || editing !== lastEditing;
+    lastEditing = editing;
 
-    resizeStableSurface(false);
+    // Reassert native GameFace surface only when OUR Ctrl edit state changes.
+    // No ears/HUD/layout/display events are observed.
+    resizeStableSurface(editChanged);
 
     if (root) {
         root.style.left = '0px';
