@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Put High Caliber on the battle WINDOW layer (layer 7).
+"""Keep High Caliber on the battle VIEW layer.
 
-Keep this isolated from drag/input logic. The standalone panel mirrors the
-WINDOW hosting layer used by MainGun so battle VIEW composition changes do not
-recompose or dim it.
+The panel is part of the normal battle HUD and therefore must stay below
+higher-priority battle menus such as reserves, the TAB roster and mission
+screens. Using WindowLayer.WINDOW made the standalone Wulf window render above
+those menus.
 """
 
 from frameworks.wulf import WindowFlags, WindowLayer
@@ -19,7 +20,7 @@ def _window_init(self, parent=None):
         self,
         WindowFlags.WINDOW,
         content=hc.HighCaliberView(),
-        layer=getattr(WindowLayer, 'WINDOW', WindowLayer.OVERLAY),
+        layer=WindowLayer.VIEW,
         name='INQHighCaliber',
         parent=parent
     )
