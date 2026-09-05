@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
 """WoT 2.4 battle integration for INQ High Caliber.
 
-This module owns everything that is battle-shell specific:
+This module owns the battle-shell specific pieces:
 - WoT 2.4 BattleFieldCtrl lifecycle compatibility;
 - the intentional WINDOW/layer-7 host;
-- suppression while WG battle overlays are open.
+- clean suppression while WG battle overlays are open.
 
-The indicator stays on layer 7 in normal battle, but the whole Wulf window is
-hidden for TAB and for N/B overlay menus instead of only sending visible=false
-to GameFace.  That prevents a later damage push from drawing above WG menus.
+TAB/N/B are treated as hold-style battle overlays: High Caliber is hidden for
+exactly as long as one of those keys is physically down. Persistent Wulf
+windows are tracked independently until their destroy(). No cursor polling,
+no timers and no toggle auto-close state are used.
 """
 
 import BigWorld
-import GUI
 
 from frameworks.wulf import WindowFlags, WindowLayer
 from gui.battle_control.controllers.battle_field_ctrl import BattleFieldCtrl
@@ -112,11 +112,8 @@ hc.HighCaliberWindow.__init__ = _highcaliber_window_init
 # -----------------------------------------------------------------------------
 
 _blocking_windows = {}
-_tab_blocked = False
-_toggle_block = None          # 'N' or 'B' while a toggle-style menu is open
-_key_latched = set()
-_watch_callback = None
-_watch_clear_ticks = 0
+_key_blocked = False
+_last_hidden = None
 
 _base_view_push = hc.HighCaliberView.push
 _base_wulf_load = WindowImpl.load
@@ -193,19 +190,28 @@ def _is_blocker(window):
     return False
 
 
-def _suppressed():
-    return bool(_blocking_windows or _tab_blocked or _toggle_block)
-
-
-def _cursor_visible():
+def _overlay_keys_down():
+    """Return True while TAB, N or B is physically held."""
     try:
-        cursor = GUI.mcursor()
-        visible = getattr(cursor, 'visible', None)
-        if callable(visible):
-            visible = visible()
-        return bool(visible)
+        import Keys
+        for code in (
+                getattr(Keys, 'KEY_TAB', None),
+                getattr(Keys, 'KEY_N', None),
+                getattr(Keys, 'KEY_B', None)):
+            if code is None:
+                continue
+            try:
+                if BigWorld.isKeyDown(code):
+                    return True
+            except Exception:
+                pass
     except Exception:
-        return False
+        pass
+    return False
+
+
+def _suppressed():
+    return bool(_blocking_windows or _key_blocked)
 
 
 def _listener_parts():
@@ -218,12 +224,18 @@ def _listener_parts():
         return None, None
 
 
-def _apply_visibility(reason=''):
-    """Hide/show the Wulf window itself; payload hiding alone is not enough."""
+def _apply_visibility(reason='', force=False):
+    """Hide/show the Wulf window itself and avoid redundant visibility churn."""
+    global _last_hidden
+
     window, view = _listener_parts()
     if window is None or view is None:
         return
+
     hidden = _suppressed()
+    if not force and hidden == _last_hidden:
+        return
+
     try:
         if hidden:
             try:
@@ -240,12 +252,17 @@ def _apply_visibility(reason=''):
             except Exception:
                 pass
             _base_view_push(view)
-        hc._logger.info('High Caliber overlay visibility: hidden=%s reason=%s', hidden, reason)
+
+        _last_hidden = hidden
+        hc._logger.info(
+            'High Caliber overlay visibility: hidden=%s reason=%s',
+            hidden, reason)
     except Exception:
         hc._logger.exception('Failed to update High Caliber overlay visibility')
 
 
 def _guarded_view_push(self):
+    """Damage/state updates must never resurrect the panel under a WG overlay."""
     if _suppressed():
         try:
             self.hide()
@@ -266,7 +283,7 @@ def _wulf_load(self, *args, **kwargs):
             _blocking_windows[id(self)] = label
             _apply_visibility('wulf-open:' + label)
         elif _is_highcaliber_window(self):
-            _apply_visibility('highcaliber-load')
+            _apply_visibility('highcaliber-load', force=True)
     except Exception:
         hc._logger.exception('High Caliber Wulf overlay load hook failed')
     return result
@@ -290,102 +307,15 @@ WindowImpl.load = _wulf_load
 WindowImpl.destroy = _wulf_destroy
 
 
-def _key_codes():
-    try:
-        import Keys
-        return {
-            'TAB': getattr(Keys, 'KEY_TAB', None),
-            'N': getattr(Keys, 'KEY_N', None),
-            'B': getattr(Keys, 'KEY_B', None),
-            'ESC': getattr(Keys, 'KEY_ESCAPE', getattr(Keys, 'KEY_ESC', None)),
-        }
-    except Exception:
-        return {'TAB': None, 'N': None, 'B': None, 'ESC': None}
-
-
-def _is_down(code):
-    if code is None:
-        return False
-    try:
-        return bool(BigWorld.isKeyDown(code))
-    except Exception:
-        return False
-
-
-def _schedule_watch():
-    global _watch_callback
-    if _watch_callback is not None or not _toggle_block:
-        return
-    try:
-        _watch_callback = BigWorld.callback(0.1, _watch_toggle_menu)
-    except Exception:
-        _watch_callback = None
-
-
-def _watch_toggle_menu():
-    global _watch_callback, _watch_clear_ticks, _toggle_block
-    _watch_callback = None
-    if not _toggle_block:
-        _watch_clear_ticks = 0
-        return
-
-    codes = _key_codes()
-    any_menu_key_down = _is_down(codes.get('N')) or _is_down(codes.get('B'))
-    if not any_menu_key_down and not _cursor_visible():
-        _watch_clear_ticks += 1
-    else:
-        _watch_clear_ticks = 0
-
-    # Two consecutive cursor-hidden samples prevent a one-frame transition
-    # from flashing the layer-7 indicator back over the menu.
-    if _watch_clear_ticks >= 2:
-        old = _toggle_block
-        _toggle_block = None
-        _watch_clear_ticks = 0
-        _apply_visibility('toggle-auto-close:' + str(old))
-        return
-    _schedule_watch()
-
-
 def _sample_overlay_keys():
-    global _tab_blocked, _toggle_block, _watch_clear_ticks
+    global _key_blocked
 
-    codes = _key_codes()
-    states = dict((name, _is_down(code)) for name, code in codes.iteritems())
-    changed = False
+    blocked = _overlay_keys_down()
+    if blocked == _key_blocked:
+        return
 
-    tab_now = states.get('TAB', False)
-    if tab_now != _tab_blocked:
-        _tab_blocked = tab_now
-        changed = True
-
-    # Rising edges for toggle-style overlays. If N/B is actually hold-style in
-    # a client mode, the cursor watcher clears the block immediately after key-up.
-    for name in ('N', 'B'):
-        down = states.get(name, False)
-        if down and name not in _key_latched:
-            _key_latched.add(name)
-            _toggle_block = None if _toggle_block == name else name
-            _watch_clear_ticks = 0
-            changed = True
-            if _toggle_block:
-                _schedule_watch()
-        elif not down:
-            _key_latched.discard(name)
-
-    esc_down = states.get('ESC', False)
-    if esc_down and 'ESC' not in _key_latched:
-        _key_latched.add('ESC')
-        if _toggle_block:
-            _toggle_block = None
-            _watch_clear_ticks = 0
-            changed = True
-    elif not esc_down:
-        _key_latched.discard('ESC')
-
-    if changed:
-        _apply_visibility('hotkey tab=%s toggle=%s cursor=%s' % (
-            _tab_blocked, _toggle_block, _cursor_visible()))
+    _key_blocked = blocked
+    _apply_visibility('TAB/N/B-down=%s' % blocked)
 
 
 def _install_key_hook():
@@ -408,29 +338,22 @@ def _install_key_hook():
         AvatarInputHandler.handleKeyEvent = _key_wrapper
         _avatar_key_original = original
         _avatar_key_wrapper = _key_wrapper
-        hc._logger.info('High Caliber TAB/N/B overlay hook installed')
+        hc._logger.info('High Caliber TAB/N/B hold overlay hook installed')
     except Exception:
         hc._logger.exception('Failed to install High Caliber overlay key hook')
 
 
 def _reset_overlay_state():
-    global _tab_blocked, _toggle_block, _watch_callback, _watch_clear_ticks
+    global _key_blocked, _last_hidden
     _blocking_windows.clear()
-    _tab_blocked = False
-    _toggle_block = None
-    _key_latched.clear()
-    _watch_clear_ticks = 0
-    if _watch_callback is not None:
-        try:
-            BigWorld.cancelCallback(_watch_callback)
-        except Exception:
-            pass
-        _watch_callback = None
+    _key_blocked = False
+    _last_hidden = None
 
 
 def init():
     _install_key_hook()
-    hc._logger.info('High Caliber WoT 2.4 battle integration installed (WINDOW layer 7)')
+    hc._logger.info(
+        'High Caliber WoT 2.4 battle integration installed (WINDOW layer 7, clean overlay suppression)')
 
 
 def fini():
