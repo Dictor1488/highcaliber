@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """Put High Caliber on the battle WINDOW layer (layer 7).
 
-Keep this isolated from drag/input logic.  The stock VIEW layer participates in
-battle HUD composition/state changes (for example team-panel/ears transitions),
-which can visually dim/recompose the custom window.  MainGun uses WINDOW for
-its standalone battle panel, so High Caliber mirrors that hosting layer.
+Keep this isolated from drag/input logic. The standalone panel mirrors the
+WINDOW hosting layer used by MainGun so battle VIEW composition changes do not
+recompose or dim it.
 """
 
 from frameworks.wulf import WindowFlags, WindowLayer
@@ -32,7 +31,6 @@ def init():
         return
     _orig_init = hc.HighCaliberWindow.__init__
     hc.HighCaliberWindow.__init__ = _window_init
-    hc._logger.info('High Caliber window layer: WINDOW (7)')
     _installed = True
 
 
