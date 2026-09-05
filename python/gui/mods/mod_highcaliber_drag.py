@@ -298,7 +298,6 @@ def _set_editing(value):
     _editing = value
     if _editing:
         _apply_saved_position()
-    hc._logger.info('High Caliber edit mode: %s', _editing)
     _push_edit_state()
 
 
@@ -312,7 +311,6 @@ def _start_drag(window, cursor_pos):
         _drag_start_position = start_position
         _drag_last_position = start_position
         _drag_active = True
-        hc._logger.info('High Caliber drag started')
     except Exception:
         _drag_active = False
         _drag_start_cursor = None
@@ -359,8 +357,6 @@ def _finish_drag():
         x, y = _config_from_pixel_position(window, final_position[0], final_position[1])
         _move_window_pixels(window, x, y)
         _save_config()
-        hc._logger.info('High Caliber position saved: x=%s y=%s',
-                        hc._CONFIG.get('offsetX'), hc._CONFIG.get('offsetY'))
     except Exception:
         hc._logger.exception('High Caliber drag end failed')
 
@@ -547,7 +543,6 @@ def _install():
     hc.HighCaliberWindow._onReady = _window_ready
 
     _install_input()
-    hc._logger.info('High Caliber MainGun-style pixel Ctrl-drag installed')
     _installed = True
 
 
