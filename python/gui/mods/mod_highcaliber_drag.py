@@ -1,11 +1,17 @@
 # -*- coding: utf-8 -*-
-"""Ctrl-drag support for the standalone High Caliber indicator.
+"""Native Ctrl-drag support for the standalone High Caliber indicator.
 
-The indicator is intentionally isolated from unrelated battle HUD events:
-- only its own Ctrl edit state enables interaction;
-- GameFace only reports drag start/end from the indicator itself;
-- Python reads GUI.mcursor() while that drag is active;
-- no parent/window resize, ears, HUD layout, or other UI events are observed.
+The GameFace document is render-only.  Drag input is observed from WoT's own
+battle input path and never depends on the GameFace hit rectangle, so changing
+team panels or any other HUD layout cannot disable the gesture.
+
+Only the High Caliber gesture matters here:
+    Ctrl down              -> show edit outline / arm drag
+    Ctrl + LMB on panel    -> begin drag
+    mouse move             -> place the small Wulf window absolutely
+    LMB/Ctrl release       -> persist once
+
+There are no HUD/ears/resize listeners and no self-rescheduling input poll.
 """
 
 import json
@@ -14,30 +20,31 @@ import os
 import BigWorld
 import GUI
 
-try:
-    import InputHandler
-except Exception:
-    InputHandler = None
-
 from frameworks.wulf import ViewModel, PositionAnchor
 from gui.mods import mod_highcaliber as hc
 
-_CTRL_KEYS = (29, 157)
 _BASE_WIDTH = 150.0
 _BASE_HEIGHT = 40.0
 
 _editing = False
 _installed = False
+_gesture_latched = False
+_drag_active = False
+_drag_grab = None
+_drag_last_xy = None
+
 _orig_model_init = None
 _orig_model_initialize = None
 _orig_view_push = None
 _orig_window_ready = None
-_orig_process_shot_results = None
-_ctrl_poll = None
-_drag_callback = None
-_drag_cursor_start = None
-_drag_window_start = None
-_drag_last_xy = None
+
+_avatar_key_original = None
+_avatar_mouse_original = None
+_avatar_key_wrapper = None
+_avatar_mouse_wrapper = None
+_gui_mouse_installed = False
+
+_fallback_input_installed = False
 
 
 def _save_config():
@@ -88,13 +95,14 @@ def _panel_size():
 
 
 def _interface_scale(window):
+    """Physical pixels per logical Wulf unit."""
     try:
         physical = _pair(GUI.screenResolution())
         logical = _pair(getattr(getattr(window, 'parent', None), 'size', None))
         if physical is None or logical is None or logical[0] <= 0 or logical[1] <= 0:
             return 1.0
-        scale = ((physical[0] / logical[0]) + (physical[1] / logical[1])) * 0.5
-        return max(0.5, min(4.0, float(scale)))
+        value = ((physical[0] / logical[0]) + (physical[1] / logical[1])) * 0.5
+        return max(0.5, min(4.0, float(value)))
     except Exception:
         return 1.0
 
@@ -107,11 +115,13 @@ def _parent_size(window):
     except Exception:
         pass
     try:
-        physical = GUI.screenResolution()
+        physical = _pair(GUI.screenResolution())
         scale = _interface_scale(window)
-        return (float(physical[0]) / scale, float(physical[1]) / scale)
+        if physical is not None:
+            return (physical[0] / scale, physical[1] / scale)
     except Exception:
-        return (1920.0, 1080.0)
+        pass
+    return (1920.0, 1080.0)
 
 
 def _clamp_xy(window, x, y):
@@ -148,6 +158,16 @@ def _config_from_position(window, x, y):
     return x, y
 
 
+def _window_position(window):
+    try:
+        pos = _pair(getattr(window, 'position', None))
+        if pos is not None:
+            return _clamp_xy(window, pos[0], pos[1])
+    except Exception:
+        pass
+    return _position_from_config(window)
+
+
 def _move_window(window, x, y):
     x, y = _clamp_xy(window, x, y)
     try:
@@ -160,116 +180,74 @@ def _move_window(window, x, y):
 
 
 def _apply_saved_position():
-    if _drag_cursor_start is not None:
+    """Apply config at creation/own Ctrl only; never from unrelated HUD updates."""
+    if _drag_active:
         return
     window = _window()
     if window is None:
         return
     try:
         x, y = _position_from_config(window)
-        x, y = _move_window(window, x, y)
-        old_x = int(hc._CONFIG.get('offsetX', 380))
-        old_y = int(hc._CONFIG.get('offsetY', 0))
-        _config_from_position(window, x, y)
-        if old_x != hc._CONFIG.get('offsetX') or old_y != hc._CONFIG.get('offsetY'):
-            _save_config()
+        _move_window(window, x, y)
     except Exception:
         hc._logger.exception('Failed to position High Caliber window')
 
 
-def _cursor_position_px():
-    resolution = GUI.screenResolution()
-    width = float(resolution[0])
-    height = float(resolution[1])
-    pos = GUI.mcursor().position
-    return ((pos.x * 0.5 + 0.5) * width,
-            (0.5 - pos.y * 0.5) * height)
+def _cursor_logical(window):
+    """Return free cursor in Wulf logical coordinates.
+
+    Current WoT builds expose GUI.mcursor().position as clip coordinates during
+    the normal battle path, but some paths/builds expose device pixels.  Accept
+    both conventions and then divide by the actual interface scale.
+    """
+    try:
+        pos = _pair(GUI.mcursor().position)
+        resolution = _pair(GUI.screenResolution())
+        if pos is None or resolution is None:
+            return None
+        if abs(pos[0]) <= 1.5 and abs(pos[1]) <= 1.5:
+            px = (pos[0] * 0.5 + 0.5) * resolution[0]
+            py = (0.5 - pos[1] * 0.5) * resolution[1]
+        else:
+            px, py = pos
+        scale = _interface_scale(window)
+        return (px / scale, py / scale)
+    except Exception:
+        return None
 
 
-def _left_mouse_down():
+def _ctrl_down_now():
+    try:
+        import Keys
+        left = getattr(Keys, 'KEY_LCONTROL', 29)
+        right = getattr(Keys, 'KEY_RCONTROL', 157)
+        return bool(BigWorld.isKeyDown(left) or BigWorld.isKeyDown(right))
+    except Exception:
+        for key in (29, 157):
+            try:
+                if BigWorld.isKeyDown(key):
+                    return True
+            except Exception:
+                pass
+    return False
+
+
+def _lmb_down_now():
     try:
         import Keys
         return bool(BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE))
     except Exception:
-        return True
+        return False
 
 
-def _drag_start():
-    global _drag_cursor_start, _drag_window_start, _drag_last_xy
-    if not _editing or not hc._CONFIG.get('drag', True):
-        return
-    window = _window()
-    if window is None or _drag_cursor_start is not None:
-        return
-    try:
-        start_x, start_y = _position_from_config(window)
-        start_x, start_y = _move_window(window, start_x, start_y)
-        _drag_cursor_start = _cursor_position_px()
-        _drag_window_start = (start_x, start_y)
-        _drag_last_xy = (start_x, start_y)
-        _drag_tick()
-    except Exception:
-        _drag_cursor_start = None
-        _drag_window_start = None
-        _drag_last_xy = None
-        hc._logger.exception('High Caliber drag start failed')
-
-
-def _drag_tick():
-    global _drag_callback, _drag_last_xy
-    _drag_callback = None
-    if _drag_cursor_start is None or _drag_window_start is None:
-        return
-    if not _left_mouse_down():
-        _drag_end()
-        return
-    window = _window()
-    if window is None:
-        _drag_end()
-        return
-    try:
-        cursor_x, cursor_y = _cursor_position_px()
-        scale = _interface_scale(window)
-        x = _drag_window_start[0] + (cursor_x - _drag_cursor_start[0]) / scale
-        y = _drag_window_start[1] + (cursor_y - _drag_cursor_start[1]) / scale
-        _drag_last_xy = _move_window(window, x, y)
-    except Exception:
-        hc._logger.exception('High Caliber drag tick failed')
-        _drag_end()
-        return
-    try:
-        _drag_callback = BigWorld.callback(0.0, _drag_tick)
-    except Exception:
-        _drag_callback = None
-
-
-def _drag_end():
-    global _drag_callback, _drag_cursor_start, _drag_window_start, _drag_last_xy
-    if _drag_callback is not None:
-        try:
-            BigWorld.cancelCallback(_drag_callback)
-        except Exception:
-            pass
-        _drag_callback = None
-    if _drag_cursor_start is None:
-        return
-
-    window = _window()
-    final_xy = _drag_last_xy
-    _drag_cursor_start = None
-    _drag_window_start = None
-    _drag_last_xy = None
-    if window is None or final_xy is None:
-        return
-    try:
-        x, y = _config_from_position(window, final_xy[0], final_xy[1])
-        _move_window(window, x, y)
-        _save_config()
-        hc._logger.info('High Caliber position saved: x=%s y=%s',
-                        hc._CONFIG.get('offsetX'), hc._CONFIG.get('offsetY'))
-        hc._push_ui()
-    except Exception:
-        hc._logger.exception('High Caliber drag end failed')
+def _cursor_on_panel(window, cursor):
+    if cursor is None:
+        return False
+    x, y = _position_from_config(window)
+    w, h = _panel_size()
+    # A tiny logical tolerance protects the edge from fractional UI scale.
+    return (cursor[0] >= x - 2.0 and cursor[0] <= x + w + 2.0 and
+            cursor[1] >= y - 2.0 and cursor[1] <= y + h + 2.0)
 
 
 def _push_edit_state():
@@ -283,8 +261,214 @@ def _push_edit_state():
         hc._logger.exception('Failed to push High Caliber edit state')
 
 
-def _model_init(self, properties=2, commands=2):
-    ViewModel.__init__(self, properties=2, commands=2)
+def _set_editing(value):
+    global _editing
+    value = bool(value and hc._CONFIG.get('drag', True) and _window() is not None)
+    if value == _editing:
+        return
+    if not value:
+        _finish_drag()
+    _editing = value
+    if _editing:
+        # This is deliberately the only runtime position reassert: our Ctrl.
+        _apply_saved_position()
+    hc._logger.info('High Caliber edit mode: %s', _editing)
+    _push_edit_state()
+
+
+def _start_drag(window, cursor):
+    global _drag_active, _drag_grab, _drag_last_xy
+    if _drag_active or cursor is None:
+        return
+    try:
+        # Own Ctrl just reasserted config, so use the actual applied position.
+        x, y = _window_position(window)
+        _drag_grab = (cursor[0] - x, cursor[1] - y)
+        _drag_last_xy = (x, y)
+        _drag_active = True
+        hc._logger.info('High Caliber drag started')
+    except Exception:
+        _drag_active = False
+        _drag_grab = None
+        _drag_last_xy = None
+        hc._logger.exception('High Caliber drag start failed')
+
+
+def _move_drag(window, cursor):
+    global _drag_last_xy
+    if not _drag_active or _drag_grab is None or cursor is None:
+        return
+    try:
+        x = cursor[0] - _drag_grab[0]
+        y = cursor[1] - _drag_grab[1]
+        _drag_last_xy = _move_window(window, x, y)
+    except Exception:
+        hc._logger.exception('High Caliber drag move failed')
+        _finish_drag()
+
+
+def _finish_drag():
+    global _drag_active, _drag_grab, _drag_last_xy
+    if not _drag_active:
+        _drag_grab = None
+        _drag_last_xy = None
+        return
+    window = _window()
+    final_xy = _drag_last_xy
+    _drag_active = False
+    _drag_grab = None
+    _drag_last_xy = None
+    if window is None or final_xy is None:
+        return
+    try:
+        x, y = _config_from_position(window, final_xy[0], final_xy[1])
+        _move_window(window, x, y)
+        _save_config()
+        hc._logger.info('High Caliber position saved: x=%s y=%s',
+                        hc._CONFIG.get('offsetX'), hc._CONFIG.get('offsetY'))
+    except Exception:
+        hc._logger.exception('High Caliber drag end failed')
+
+
+def _sample_input(mouse_move=False):
+    """Observe only Ctrl/LMB.  Never consumes or modifies the game's event."""
+    global _gesture_latched
+    try:
+        ctrl = _ctrl_down_now()
+        _set_editing(ctrl)
+
+        gesture = bool(ctrl and _lmb_down_now())
+        window = _window()
+
+        if gesture and not _gesture_latched:
+            _gesture_latched = True
+            if window is not None:
+                cursor = _cursor_logical(window)
+                if _cursor_on_panel(window, cursor):
+                    _start_drag(window, cursor)
+        elif not gesture and _gesture_latched:
+            _gesture_latched = False
+            _finish_drag()
+
+        if mouse_move and gesture and _drag_active and window is not None:
+            _move_drag(window, _cursor_logical(window))
+    except Exception:
+        hc._logger.exception('High Caliber input sample failed')
+
+
+def _handle_gui_mouse_event(event):
+    # gui.g_mouseEventHandlers is an observer registry. False means unconsumed.
+    _sample_input(mouse_move=True)
+    return False
+
+
+def _fallback_key_event(event):
+    _sample_input(mouse_move=False)
+
+
+def _install_input():
+    global _avatar_key_original, _avatar_mouse_original
+    global _avatar_key_wrapper, _avatar_mouse_wrapper
+    global _gui_mouse_installed, _fallback_input_installed
+
+    # WoT 2.4 central battle dispatchers. Wrappers always call the original
+    # first and preserve its return value; we only observe live key state.
+    try:
+        from AvatarInputHandler import AvatarInputHandler
+
+        if _avatar_key_wrapper is None:
+            original = AvatarInputHandler.handleKeyEvent
+            original = getattr(original, '_inq_hc_original', original)
+
+            def _key_wrapper(self, *args, **kwargs):
+                result = original(self, *args, **kwargs)
+                _sample_input(mouse_move=False)
+                return result
+
+            _key_wrapper._inq_hc_original = original
+            AvatarInputHandler.handleKeyEvent = _key_wrapper
+            _avatar_key_original = original
+            _avatar_key_wrapper = _key_wrapper
+
+        if _avatar_mouse_wrapper is None:
+            original_mouse = AvatarInputHandler.handleMouseEvent
+            original_mouse = getattr(original_mouse, '_inq_hc_original', original_mouse)
+
+            def _mouse_wrapper(self, *args, **kwargs):
+                result = original_mouse(self, *args, **kwargs)
+                _sample_input(mouse_move=True)
+                return result
+
+            _mouse_wrapper._inq_hc_original = original_mouse
+            AvatarInputHandler.handleMouseEvent = _mouse_wrapper
+            _avatar_mouse_original = original_mouse
+            _avatar_mouse_wrapper = _mouse_wrapper
+    except Exception:
+        hc._logger.exception('Failed to hook AvatarInputHandler for High Caliber drag')
+
+    # Third WG-native observation point. This is a set, not a monkey patch.
+    if not _gui_mouse_installed:
+        try:
+            from gui import g_mouseEventHandlers
+            g_mouseEventHandlers.add(_handle_gui_mouse_event)
+            _gui_mouse_installed = True
+        except Exception:
+            hc._logger.exception('Failed to join g_mouseEventHandlers for High Caliber drag')
+
+    # Fallback key edges for builds where AvatarInputHandler is instantiated
+    # through a path that bypasses the class method above. No timer/polling.
+    if not _fallback_input_installed:
+        try:
+            import InputHandler
+            InputHandler.g_instance.onKeyDown += _fallback_key_event
+            InputHandler.g_instance.onKeyUp += _fallback_key_event
+            _fallback_input_installed = True
+        except Exception:
+            pass
+
+
+def _restore_input():
+    global _avatar_key_original, _avatar_mouse_original
+    global _avatar_key_wrapper, _avatar_mouse_wrapper
+    global _gui_mouse_installed, _fallback_input_installed
+
+    try:
+        from AvatarInputHandler import AvatarInputHandler
+        if (_avatar_key_wrapper is not None and
+                AvatarInputHandler.handleKeyEvent is _avatar_key_wrapper):
+            AvatarInputHandler.handleKeyEvent = _avatar_key_original
+        if (_avatar_mouse_wrapper is not None and
+                AvatarInputHandler.handleMouseEvent is _avatar_mouse_wrapper):
+            AvatarInputHandler.handleMouseEvent = _avatar_mouse_original
+    except Exception:
+        pass
+
+    if _gui_mouse_installed:
+        try:
+            from gui import g_mouseEventHandlers
+            g_mouseEventHandlers.discard(_handle_gui_mouse_event)
+        except Exception:
+            pass
+
+    if _fallback_input_installed:
+        try:
+            import InputHandler
+            InputHandler.g_instance.onKeyDown -= _fallback_key_event
+            InputHandler.g_instance.onKeyUp -= _fallback_key_event
+        except Exception:
+            pass
+
+    _avatar_key_original = None
+    _avatar_mouse_original = None
+    _avatar_key_wrapper = None
+    _avatar_mouse_wrapper = None
+    _gui_mouse_installed = False
+    _fallback_input_installed = False
+
+
+def _model_init(self, properties=2, commands=1):
+    # Core owns payload + its compatibility command. We only add editing bool.
+    ViewModel.__init__(self, properties=2, commands=1)
 
 
 def _model_get_editing(self):
@@ -295,27 +479,15 @@ def _model_set_editing(self, value):
     self._setBool(1, bool(value))
 
 
-def _on_dragged(data=None, *args):
-    if not isinstance(data, dict):
-        return
-    phase = data.get('phase')
-    if phase == 'start':
-        _drag_start()
-    elif phase == 'end':
-        _drag_end()
-
-
 def _model_initialize(self):
     _orig_model_initialize(self)
     self._addBoolProperty('editing', False)
-    self.onDragged = self._addCommand('onDragged')
-    self.onDragged += _on_dragged
 
 
 def _view_push(self):
+    # Data updates must never reposition or otherwise touch drag state.
     _orig_view_push(self)
     _push_edit_state()
-    _apply_saved_position()
 
 
 def _window_ready(self):
@@ -326,106 +498,9 @@ def _window_ready(self):
         _apply_saved_position()
 
 
-def _event_key(event):
-    try:
-        return int(event.key)
-    except Exception:
-        return None
-
-
-def _is_ctrl_event(event):
-    key = _event_key(event)
-    if key in _CTRL_KEYS:
-        return True
-    for name in ('isCtrlDown', 'isControlDown'):
-        try:
-            value = getattr(event, name, None)
-            if callable(value) and value():
-                return True
-            if value is True:
-                return True
-        except Exception:
-            pass
-    return False
-
-
-def _ctrl_down_now():
-    for key in _CTRL_KEYS:
-        try:
-            if BigWorld.isKeyDown(key):
-                return True
-        except Exception:
-            pass
-    return False
-
-
-def _set_editing(value):
-    global _editing
-    value = bool(value and hc._CONFIG.get('drag', True) and hc._battle_ready_to_show())
-    if _editing == value:
-        return
-    if not value:
-        _drag_end()
-    _editing = value
-    if _editing:
-        # Reassert only our own window when OUR Ctrl edit mode starts.
-        # Unrelated HUD changes are never observed or handled.
-        _apply_saved_position()
-    hc._logger.info('High Caliber edit mode: %s', _editing)
-    _push_edit_state()
-
-
-def _on_key_down(event):
-    if _is_ctrl_event(event):
-        _set_editing(True)
-
-
-def _on_key_up(event):
-    key = _event_key(event)
-    if key in _CTRL_KEYS:
-        _set_editing(_ctrl_down_now())
-
-
-def _ctrl_poll_tick():
-    global _ctrl_poll
-    _ctrl_poll = None
-    try:
-        _set_editing(_ctrl_down_now())
-    except Exception:
-        pass
-    _schedule_ctrl_poll()
-
-
-def _schedule_ctrl_poll():
-    global _ctrl_poll
-    if _ctrl_poll is None:
-        try:
-            _ctrl_poll = BigWorld.callback(0.05, _ctrl_poll_tick)
-        except Exception:
-            _ctrl_poll = None
-
-
-def _stop_ctrl_poll():
-    global _ctrl_poll
-    if _ctrl_poll is not None:
-        try:
-            BigWorld.cancelCallback(_ctrl_poll)
-        except Exception:
-            pass
-    _ctrl_poll = None
-
-
-def _fixed_process_shot_results(player, results):
-    try:
-        return _orig_process_shot_results(player, results)
-    except Exception:
-        hc._logger.exception('Failed to process friendly shot result')
-
-
 def _install():
     global _installed
-    global _orig_model_init, _orig_model_initialize, _orig_view_push
-    global _orig_window_ready, _orig_process_shot_results
+    global _orig_model_init, _orig_model_initialize, _orig_view_push, _orig_window_ready
     if _installed:
         return
 
@@ -436,7 +511,6 @@ def _install():
     _orig_model_initialize = hc.HighCaliberModel._initialize
     _orig_view_push = hc.HighCaliberView.push
     _orig_window_ready = hc.HighCaliberWindow._onReady
-    _orig_process_shot_results = hc._process_shot_results
 
     hc.HighCaliberModel.__init__ = _model_init
     hc.HighCaliberModel._initialize = _model_initialize
@@ -444,34 +518,19 @@ def _install():
     hc.HighCaliberModel.setEditing = _model_set_editing
     hc.HighCaliberView.push = _view_push
     hc.HighCaliberWindow._onReady = _window_ready
-    hc._process_shot_results = _fixed_process_shot_results
 
-    if InputHandler is not None:
-        try:
-            InputHandler.g_instance.onKeyDown += _on_key_down
-            InputHandler.g_instance.onKeyUp += _on_key_up
-        except Exception:
-            hc._logger.exception('Failed to install High Caliber Ctrl input')
-
-    _schedule_ctrl_poll()
-    hc._logger.info('High Caliber isolated Ctrl-drag installed; keys=%r', _CTRL_KEYS)
+    _install_input()
+    hc._logger.info('High Caliber native event-driven Ctrl-drag installed')
     _installed = True
 
 
 def _restore():
-    global _installed, _editing
+    global _installed, _editing, _gesture_latched
     if not _installed:
         return
 
-    _drag_end()
-    _stop_ctrl_poll()
-
-    if InputHandler is not None:
-        try:
-            InputHandler.g_instance.onKeyDown -= _on_key_down
-            InputHandler.g_instance.onKeyUp -= _on_key_up
-        except Exception:
-            pass
+    _finish_drag()
+    _restore_input()
 
     try:
         if _orig_model_init is not None:
@@ -482,13 +541,19 @@ def _restore():
             hc.HighCaliberView.push = _orig_view_push
         if _orig_window_ready is not None:
             hc.HighCaliberWindow._onReady = _orig_window_ready
-        if _orig_process_shot_results is not None:
-            hc._process_shot_results = _orig_process_shot_results
     except Exception:
         pass
 
     _editing = False
+    _gesture_latched = False
     _installed = False
+
+
+def _reset_state():
+    global _editing, _gesture_latched
+    _finish_drag()
+    _editing = False
+    _gesture_latched = False
 
 
 def init():
@@ -500,8 +565,8 @@ def fini():
 
 
 def onDisconnected():
-    _set_editing(False)
+    _reset_state()
 
 
 def onAccountBecomeNonPlayer():
-    _set_editing(False)
+    _reset_state()
