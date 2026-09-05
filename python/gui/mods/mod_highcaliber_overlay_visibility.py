@@ -2,12 +2,12 @@
 """Visibility guard for the layer-7 High Caliber battle window.
 
 High Caliber intentionally lives on WindowLayer.WINDOW (7), so it is not
-recomposed/dimmed with the normal battle VIEW layer.  The downside is that a
-standalone layer-7 window created later can sit above WG battle overlays.
+recomposed/dimmed with the normal battle VIEW layer. Keep layer 7, but suppress
+the indicator while temporary battle overlays are active.
 
-Keep layer 7, but suppress only the indicator contents while temporary battle
-menus are active.  We cover both Wulf windows (prebattle highlights, missions,
-reserves, full stats, ingame menu) and the hold-style battle hotkeys TAB/N/B.
+WoT 2.4 no longer exposes the old top-level InputHandler module, so TAB/N/B
+tracking uses AvatarInputHandler.handleKeyEvent, the same proven input path as
+the High Caliber drag helper.
 """
 
 import BigWorld
@@ -23,11 +23,10 @@ _orig_window_load = None
 _orig_window_destroy = None
 _orig_view_push = None
 
-_input_down_installed = False
-_input_up_installed = False
+_avatar_key_original = None
+_avatar_key_wrapper = None
 
-# Tokens are intentionally narrow.  Do not treat every layer-7 window as a
-# blocker: WN8/player panels and other passive mods can legitimately share it.
+# Keep this narrow: passive layer-7 mod windows must not suppress High Caliber.
 _BLOCKER_TOKENS = (
     'prebattlehighlights',
     'ingamemenu',
@@ -80,7 +79,10 @@ def _is_highcaliber_window(window):
     try:
         return isinstance(window, hc.HighCaliberWindow)
     except Exception:
-        return window.__class__.__name__ == 'HighCaliberWindow'
+        try:
+            return window.__class__.__name__ == 'HighCaliberWindow'
+        except Exception:
+            return False
 
 
 def _is_blocker(window):
@@ -94,17 +96,19 @@ def _is_blocker(window):
 
 
 def _keys_down():
-    """TAB = team/full stats, N = battle tasks, B = reserves/loadout."""
+    """TAB = roster/stats, N = battle tasks, B = reserves/loadout."""
     try:
         import Keys
-        key_codes = (
-            getattr(Keys, 'KEY_TAB', None),
-            getattr(Keys, 'KEY_N', None),
-            getattr(Keys, 'KEY_B', None),
-        )
-        for key in key_codes:
-            if key is not None and BigWorld.isKeyDown(key):
-                return True
+        for key in (
+                getattr(Keys, 'KEY_TAB', None),
+                getattr(Keys, 'KEY_N', None),
+                getattr(Keys, 'KEY_B', None)):
+            if key is not None:
+                try:
+                    if BigWorld.isKeyDown(key):
+                        return True
+                except Exception:
+                    pass
     except Exception:
         pass
     return False
@@ -122,8 +126,6 @@ def _apply_visibility():
         if _suppressed():
             view.hide()
         else:
-            # push() is wrapped below and therefore remains suppression-safe
-            # even if another source updates damage during a menu transition.
             _orig_view_push(view)
     except Exception:
         hc._logger.exception('Failed to update High Caliber overlay visibility')
@@ -143,12 +145,11 @@ def _window_load(self, *args, **kwargs):
     result = _orig_window_load(self, *args, **kwargs)
     try:
         if _is_blocker(self):
-            _blocking_windows[id(self)] = _window_text(self)
-            hc._logger.info('High Caliber hidden by battle overlay: %s', _blocking_windows[id(self)])
+            label = _window_text(self)
+            _blocking_windows[id(self)] = label
+            hc._logger.info('High Caliber hidden by battle overlay: %s', label)
             _apply_visibility()
         elif _is_highcaliber_window(self):
-            # A blocker such as PrebattleHighlightsWindow can already be open
-            # before HighCaliberWindow is created.
             _apply_visibility()
     except Exception:
         hc._logger.exception('High Caliber overlay load hook failed')
@@ -170,7 +171,7 @@ def _window_destroy(self, *args, **kwargs):
                 hc._logger.exception('High Caliber overlay destroy hook failed')
 
 
-def _sample_keys(*args, **kwargs):
+def _sample_keys():
     global _key_blocked
     blocked = _keys_down()
     if blocked == _key_blocked:
@@ -184,32 +185,43 @@ def _sample_keys(*args, **kwargs):
 
 
 def _install_input():
-    global _input_down_installed, _input_up_installed
+    """Install on the current AvatarInputHandler chain without breaking drag."""
+    global _avatar_key_original, _avatar_key_wrapper
+    if _avatar_key_wrapper is not None:
+        return
     try:
-        import InputHandler
-        if not _input_down_installed:
-            InputHandler.g_instance.onKeyDown += _sample_keys
-            _input_down_installed = True
-        if not _input_up_installed:
-            InputHandler.g_instance.onKeyUp += _sample_keys
-            _input_up_installed = True
+        from AvatarInputHandler import AvatarInputHandler
+
+        original = AvatarInputHandler.handleKeyEvent
+
+        def _key_wrapper(self, *args, **kwargs):
+            result = original(self, *args, **kwargs)
+            try:
+                _sample_keys()
+            except Exception:
+                hc._logger.exception('High Caliber overlay key sample failed')
+            return result
+
+        _key_wrapper._inq_hc_overlay_original = original
+        AvatarInputHandler.handleKeyEvent = _key_wrapper
+        _avatar_key_original = original
+        _avatar_key_wrapper = _key_wrapper
+        hc._logger.info('High Caliber TAB/N/B overlay hotkey hook installed')
     except Exception:
-        # Wulf window tracking still handles persistent/toggle-style menus.
         hc._logger.exception('Failed to install High Caliber overlay hotkey guard')
 
 
 def _restore_input():
-    global _input_down_installed, _input_up_installed
+    global _avatar_key_original, _avatar_key_wrapper
     try:
-        import InputHandler
-        if _input_down_installed:
-            InputHandler.g_instance.onKeyDown -= _sample_keys
-        if _input_up_installed:
-            InputHandler.g_instance.onKeyUp -= _sample_keys
+        from AvatarInputHandler import AvatarInputHandler
+        if (_avatar_key_wrapper is not None and
+                AvatarInputHandler.handleKeyEvent is _avatar_key_wrapper):
+            AvatarInputHandler.handleKeyEvent = _avatar_key_original
     except Exception:
         pass
-    _input_down_installed = False
-    _input_up_installed = False
+    _avatar_key_original = None
+    _avatar_key_wrapper = None
 
 
 def init():
