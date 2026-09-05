@@ -3,6 +3,7 @@ import { ModelObserver } from "../../libs/model.js";
 const observer = ModelObserver();
 const BASE_WIDTH = 150;
 const BASE_HEIGHT = 40;
+const SURFACE_REASSERT_MS = 4000;
 const root = document.getElementById('root');
 const value = document.getElementById('value');
 let currentCfg = {};
@@ -23,18 +24,36 @@ function uiScale() {
 }
 
 function surfaceWidth() {
-    return BASE_WIDTH * uiScale();
+    return Math.max(1, Math.ceil(BASE_WIDTH * uiScale()));
 }
 
 function surfaceHeight() {
-    return BASE_HEIGHT * uiScale();
+    return Math.max(1, Math.ceil(BASE_HEIGHT * uiScale()));
+}
+
+function collapseHitArea() {
+    /* High Caliber never needs GameFace mouse input. Drag is observed from
+       WoT's native battle input path, so keep this document click-through at
+       all times, including while Ctrl is held. */
+    try {
+        if (typeof viewEnv === 'undefined' || !viewEnv.setHitAreaPaddingsRem) return;
+        const pad = Math.ceil(Math.max(surfaceWidth(), surfaceHeight()) / 2) + 8;
+        try {
+            viewEnv.setHitAreaPaddingsRem(pad, pad, pad, pad, 15);
+        } catch (e) {
+            viewEnv.setHitAreaPaddingsRem(pad, pad, pad, pad);
+        }
+    } catch (e) {}
 }
 
 function resizeStableSurface(force) {
-    const w = Math.max(1, Math.ceil(surfaceWidth()));
-    const h = Math.max(1, Math.ceil(surfaceHeight()));
+    const w = surfaceWidth();
+    const h = surfaceHeight();
     const key = w + 'x' + h;
-    if (!force && key === lastSurfaceKey) return;
+    if (!force && key === lastSurfaceKey) {
+        collapseHitArea();
+        return;
+    }
     lastSurfaceKey = key;
     try {
         if (typeof viewEnv !== 'undefined' && viewEnv.resizeViewRem)
@@ -42,20 +61,7 @@ function resizeStableSurface(force) {
         else if (typeof viewEnv !== 'undefined' && viewEnv.resizeViewPx)
             viewEnv.resizeViewPx(w, h);
     } catch (e) {}
-}
-
-function updateHitArea(visible, editing) {
-    try {
-        if (typeof viewEnv === 'undefined' || !viewEnv.setHitAreaPaddingsRem) return;
-        let pad = 0;
-        if (!(visible && editing))
-            pad = Math.ceil(Math.max(surfaceWidth(), surfaceHeight()) / 2);
-        try {
-            viewEnv.setHitAreaPaddingsRem(pad, pad, pad, pad, 15);
-        } catch (e) {
-            viewEnv.setHitAreaPaddingsRem(pad, pad, pad, pad);
-        }
-    } catch (e) {}
+    collapseHitArea();
 }
 
 function parsePayload(model) {
@@ -72,8 +78,9 @@ function renderModel(model) {
     const editChanged = lastEditing === null || editing !== lastEditing;
     lastEditing = editing;
 
-    // Reassert native GameFace surface only when OUR Ctrl edit state changes.
-    // No ears/HUD/layout/display events are observed.
+    /* Reassert on our own Ctrl edge too. If Ctrl is pressed during the short
+       startup interval before the engine's size deadline settles, the panel
+       repairs itself immediately without observing any HUD/layout event. */
     resizeStableSurface(editChanged);
 
     if (root) {
@@ -83,7 +90,6 @@ function renderModel(model) {
         root.className = visible ? (editing ? 'editing' : '') : 'hidden';
     }
 
-    updateHitArea(visible, editing);
     if (!visible || !value) return;
 
     const status = String(currentCfg.status || 'progress');
@@ -101,33 +107,15 @@ function renderModel(model) {
     }
 }
 
-function callDrag(phase) {
-    try {
-        const model = observer.model;
-        if (model && typeof model.onDragged === 'function')
-            model.onDragged({ phase: phase });
-    } catch (e) {}
-}
-
-function bindDrag() {
-    if (!root) return;
-    root.addEventListener('mousedown', function (event) {
-        if (event.button !== 0) return;
-        const model = observer.model;
-        const visible = currentCfg.visible === true;
-        const editing = visible && currentCfg.dragEnabled !== false && !!(model && model.editing);
-        if (!editing) return;
-        callDrag('start');
-        if (event.preventDefault) event.preventDefault();
-    });
-    document.addEventListener('mouseup', function () {
-        callDrag('end');
-    });
-}
-
 engine.whenReady.then(function () {
+    /* WoT GameFace has a late default-size fallback after its size-calculation
+       deadline. MARKS and other standalone widgets therefore push once now and
+       once after that deadline; this is a one-shot startup repair, not polling. */
     resizeStableSurface(true);
-    bindDrag();
+    window.setTimeout(function () {
+        resizeStableSurface(true);
+    }, SURFACE_REASSERT_MS);
+
     observer.onUpdate(renderModel);
     observer.subscribe();
     renderModel(observer.model);
