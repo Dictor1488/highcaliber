@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
 """Native Ctrl-drag support for the standalone High Caliber indicator.
 
-The GameFace document is render-only.  Drag input is observed from WoT's own
-battle input path and never depends on the GameFace hit rectangle, so changing
-team panels or any other HUD layout cannot disable the gesture.
+Drag follows the proven UnderPressurePH7/MainGun geometry:
+- GUI.mcursor().position is converted directly to screen pixels;
+- hit testing is done in screen pixels against the panel rectangle;
+- the Wulf window is moved by converting screen pixels back through the
+  actual window/interface scale;
+- GameFace is render-only and never owns mouse input.
 
-Only the High Caliber gesture matters here:
-    Ctrl down              -> show edit outline / arm drag
-    Ctrl + LMB on panel    -> begin drag
-    mouse move             -> place the small Wulf window absolutely
-    LMB/Ctrl release       -> persist once
-
-There are no HUD/ears/resize listeners and no self-rescheduling input poll.
+Input stays event-driven.  Only our Ctrl/LMB gesture is observed; there are no
+HUD/ears/resize listeners and no permanent drag/input polling loop.
 """
 
 import json
@@ -25,13 +23,15 @@ from gui.mods import mod_highcaliber as hc
 
 _BASE_WIDTH = 150.0
 _BASE_HEIGHT = 40.0
+_EDGE_TOLERANCE = 2.0
 
 _editing = False
 _installed = False
 _gesture_latched = False
 _drag_active = False
-_drag_grab = None
-_drag_last_xy = None
+_drag_start_cursor = None
+_drag_start_position = None
+_drag_last_position = None
 
 _orig_model_init = None
 _orig_model_initialize = None
@@ -43,7 +43,6 @@ _avatar_mouse_original = None
 _avatar_key_wrapper = None
 _avatar_mouse_wrapper = None
 _gui_mouse_installed = False
-
 _fallback_input_installed = False
 
 
@@ -85,57 +84,98 @@ def _pair(value):
             return None
 
 
-def _panel_size():
+def _screen_resolution():
     try:
-        scale = float(hc._CONFIG.get('scale', 1.0) or 1.0)
+        width, height = GUI.screenResolution()[:2]
+        if width > 0 and height > 0:
+            return (float(width), float(height))
     except Exception:
-        scale = 1.0
-    scale = max(0.5, min(2.0, scale))
+        pass
+    try:
+        width = BigWorld.screenWidth()
+        height = BigWorld.screenHeight()
+        if width > 0 and height > 0:
+            return (float(width), float(height))
+    except Exception:
+        pass
+    return (1920.0, 1080.0)
+
+
+def _cursor_pixels(cursor=None):
+    """Exact MainGun cursor conversion: normalized GUI cursor -> screen px."""
+    try:
+        if cursor is None:
+            cursor = GUI.mcursor()
+        norm_x, norm_y = cursor.position
+        screen_w, screen_h = _screen_resolution()
+        return ((float(norm_x) + 1.0) * 0.5 * screen_w,
+                (1.0 - float(norm_y)) * 0.5 * screen_h)
+    except Exception:
+        return None
+
+
+def _config_scale():
+    try:
+        value = float(hc._CONFIG.get('scale', 1.0) or 1.0)
+    except Exception:
+        value = 1.0
+    return max(0.5, min(2.0, value))
+
+
+def _panel_logical_size():
+    scale = _config_scale()
     return (_BASE_WIDTH * scale, _BASE_HEIGHT * scale)
 
 
-def _interface_scale(window):
-    """Physical pixels per logical Wulf unit."""
-    try:
-        physical = _pair(GUI.screenResolution())
-        logical = _pair(getattr(getattr(window, 'parent', None), 'size', None))
-        if physical is None or logical is None or logical[0] <= 0 or logical[1] <= 0:
-            return 1.0
-        value = ((physical[0] / logical[0]) + (physical[1] / logical[1])) * 0.5
-        return max(0.5, min(4.0, float(value)))
-    except Exception:
-        return 1.0
-
-
-def _parent_size(window):
+def _parent_logical_size(window):
     try:
         size = _pair(getattr(getattr(window, 'parent', None), 'size', None))
         if size is not None and size[0] > 0 and size[1] > 0:
             return size
     except Exception:
         pass
-    try:
-        physical = _pair(GUI.screenResolution())
-        scale = _interface_scale(window)
-        if physical is not None:
-            return (physical[0] / scale, physical[1] / scale)
-    except Exception:
-        pass
-    return (1920.0, 1080.0)
+    return _screen_resolution()
 
 
-def _clamp_xy(window, x, y):
-    parent_w, parent_h = _parent_size(window)
-    panel_w, panel_h = _panel_size()
-    max_x = max(0.0, parent_w - panel_w)
-    max_y = max(0.0, parent_h - panel_h)
+def _window_scale(window):
+    """Screen pixels per Wulf logical unit, axis by axis.
+
+    MainGun derives this from reported view size / native window size.  Our
+    panel has a fixed GameFace surface, so the same conversion is obtained more
+    directly from physical screen size / Wulf parent size.  This avoids the old
+    clip-space/delta assumptions and remains correct at non-100% UI scale.
+    """
+    screen_w, screen_h = _screen_resolution()
+    logical_w, logical_h = _parent_logical_size(window)
+    if logical_w <= 0 or logical_h <= 0:
+        return (1.0, 1.0)
+    scale_x = screen_w / float(logical_w)
+    scale_y = screen_h / float(logical_h)
+    if not 0.4 <= scale_x <= 4.0:
+        scale_x = 1.0
+    if not 0.4 <= scale_y <= 4.0:
+        scale_y = 1.0
+    return (scale_x, scale_y)
+
+
+def _panel_pixel_size(window):
+    width, height = _panel_logical_size()
+    scale_x, scale_y = _window_scale(window)
+    return (width * scale_x, height * scale_y)
+
+
+def _clamp_pixels(window, x, y):
+    screen_w, screen_h = _screen_resolution()
+    panel_w, panel_h = _panel_pixel_size(window)
+    max_x = max(0.0, screen_w - panel_w)
+    max_y = max(0.0, screen_h - panel_h)
     return (max(0.0, min(float(x), max_x)),
             max(0.0, min(float(y), max_y)))
 
 
-def _position_from_config(window):
-    parent_w, _ = _parent_size(window)
-    panel_w, _ = _panel_size()
+def _logical_position_from_config(window):
+    parent_w, _ = _parent_logical_size(window)
+    panel_w, _ = _panel_logical_size()
     try:
         offset_x = float(hc._CONFIG.get('offsetX', 380) or 0)
     except Exception:
@@ -144,76 +184,64 @@ def _position_from_config(window):
         offset_y = float(hc._CONFIG.get('offsetY', 0) or 0)
     except Exception:
         offset_y = 0.0
-    x = (parent_w - panel_w) * 0.5 + offset_x
-    y = offset_y
-    return _clamp_xy(window, x, y)
+    return ((parent_w - panel_w) * 0.5 + offset_x, offset_y)
 
 
-def _config_from_position(window, x, y):
-    parent_w, _ = _parent_size(window)
-    panel_w, _ = _panel_size()
-    x, y = _clamp_xy(window, x, y)
-    hc._CONFIG['offsetX'] = int(round(x - (parent_w - panel_w) * 0.5))
-    hc._CONFIG['offsetY'] = int(round(y))
-    return x, y
+def _pixel_position_from_config(window):
+    logical_x, logical_y = _logical_position_from_config(window)
+    scale_x, scale_y = _window_scale(window)
+    return _clamp_pixels(window, logical_x * scale_x, logical_y * scale_y)
 
 
-def _window_position(window):
+def _config_from_pixel_position(window, x, y):
+    x, y = _clamp_pixels(window, x, y)
+    scale_x, scale_y = _window_scale(window)
+    logical_x = x / scale_x if scale_x else x
+    logical_y = y / scale_y if scale_y else y
+    parent_w, _ = _parent_logical_size(window)
+    panel_w, _ = _panel_logical_size()
+    hc._CONFIG['offsetX'] = int(round(logical_x - (parent_w - panel_w) * 0.5))
+    hc._CONFIG['offsetY'] = int(round(logical_y))
+    return (x, y)
+
+
+def _window_pixel_position(window):
     try:
         pos = _pair(getattr(window, 'position', None))
         if pos is not None:
-            return _clamp_xy(window, pos[0], pos[1])
+            scale_x, scale_y = _window_scale(window)
+            return _clamp_pixels(window, pos[0] * scale_x, pos[1] * scale_y)
     except Exception:
         pass
-    return _position_from_config(window)
+    return _pixel_position_from_config(window)
 
 
-def _move_window(window, x, y):
-    x, y = _clamp_xy(window, x, y)
+def _move_window_pixels(window, x, y):
+    x, y = _clamp_pixels(window, x, y)
+    scale_x, scale_y = _window_scale(window)
+    logical_x = x / scale_x if scale_x else x
+    logical_y = y / scale_y if scale_y else y
     try:
-        window.move(int(round(x)), int(round(y)),
+        window.move(int(round(logical_x)), int(round(logical_y)),
                     xAnchor=PositionAnchor.LEFT,
                     yAnchor=PositionAnchor.TOP)
     except TypeError:
-        window.move(int(round(x)), int(round(y)))
-    return x, y
+        window.move(int(round(logical_x)), int(round(logical_y)))
+    return (x, y)
 
 
 def _apply_saved_position():
-    """Apply config at creation/own Ctrl only; never from unrelated HUD updates."""
+    """Apply config only at creation or our own Ctrl edge."""
     if _drag_active:
         return
     window = _window()
     if window is None:
         return
     try:
-        x, y = _position_from_config(window)
-        _move_window(window, x, y)
+        x, y = _pixel_position_from_config(window)
+        _move_window_pixels(window, x, y)
     except Exception:
         hc._logger.exception('Failed to position High Caliber window')
-
-
-def _cursor_logical(window):
-    """Return free cursor in Wulf logical coordinates.
-
-    Current WoT builds expose GUI.mcursor().position as clip coordinates during
-    the normal battle path, but some paths/builds expose device pixels.  Accept
-    both conventions and then divide by the actual interface scale.
-    """
-    try:
-        pos = _pair(GUI.mcursor().position)
-        resolution = _pair(GUI.screenResolution())
-        if pos is None or resolution is None:
-            return None
-        if abs(pos[0]) <= 1.5 and abs(pos[1]) <= 1.5:
-            px = (pos[0] * 0.5 + 0.5) * resolution[0]
-            py = (0.5 - pos[1] * 0.5) * resolution[1]
-        else:
-            px, py = pos
-        scale = _interface_scale(window)
-        return (px / scale, py / scale)
-    except Exception:
-        return None
 
 
 def _ctrl_down_now():
@@ -240,14 +268,13 @@ def _lmb_down_now():
         return False
 
 
-def _cursor_on_panel(window, cursor):
-    if cursor is None:
+def _cursor_on_panel(window, cursor_pos):
+    if cursor_pos is None:
         return False
-    x, y = _position_from_config(window)
-    w, h = _panel_size()
-    # A tiny logical tolerance protects the edge from fractional UI scale.
-    return (cursor[0] >= x - 2.0 and cursor[0] <= x + w + 2.0 and
-            cursor[1] >= y - 2.0 and cursor[1] <= y + h + 2.0)
+    x, y = _pixel_position_from_config(window)
+    width, height = _panel_pixel_size(window)
+    return (x - _EDGE_TOLERANCE <= cursor_pos[0] <= x + width + _EDGE_TOLERANCE and
+            y - _EDGE_TOLERANCE <= cursor_pos[1] <= y + height + _EDGE_TOLERANCE)
 
 
 def _push_edit_state():
@@ -270,59 +297,67 @@ def _set_editing(value):
         _finish_drag()
     _editing = value
     if _editing:
-        # This is deliberately the only runtime position reassert: our Ctrl.
         _apply_saved_position()
     hc._logger.info('High Caliber edit mode: %s', _editing)
     _push_edit_state()
 
 
-def _start_drag(window, cursor):
-    global _drag_active, _drag_grab, _drag_last_xy
-    if _drag_active or cursor is None:
+def _start_drag(window, cursor_pos):
+    global _drag_active, _drag_start_cursor, _drag_start_position, _drag_last_position
+    if _drag_active or cursor_pos is None:
         return
     try:
-        # Own Ctrl just reasserted config, so use the actual applied position.
-        x, y = _window_position(window)
-        _drag_grab = (cursor[0] - x, cursor[1] - y)
-        _drag_last_xy = (x, y)
+        start_position = _window_pixel_position(window)
+        _drag_start_cursor = cursor_pos
+        _drag_start_position = start_position
+        _drag_last_position = start_position
         _drag_active = True
         hc._logger.info('High Caliber drag started')
     except Exception:
         _drag_active = False
-        _drag_grab = None
-        _drag_last_xy = None
+        _drag_start_cursor = None
+        _drag_start_position = None
+        _drag_last_position = None
         hc._logger.exception('High Caliber drag start failed')
 
 
-def _move_drag(window, cursor):
-    global _drag_last_xy
-    if not _drag_active or _drag_grab is None or cursor is None:
+def _move_drag(window, cursor_pos):
+    global _drag_last_position
+    if (not _drag_active or cursor_pos is None or
+            _drag_start_cursor is None or _drag_start_position is None):
         return
     try:
-        x = cursor[0] - _drag_grab[0]
-        y = cursor[1] - _drag_grab[1]
-        _drag_last_xy = _move_window(window, x, y)
+        dx = cursor_pos[0] - _drag_start_cursor[0]
+        dy = cursor_pos[1] - _drag_start_cursor[1]
+        _drag_last_position = _move_window_pixels(
+            window,
+            _drag_start_position[0] + dx,
+            _drag_start_position[1] + dy)
     except Exception:
         hc._logger.exception('High Caliber drag move failed')
         _finish_drag()
 
 
 def _finish_drag():
-    global _drag_active, _drag_grab, _drag_last_xy
+    global _drag_active, _drag_start_cursor, _drag_start_position, _drag_last_position
     if not _drag_active:
-        _drag_grab = None
-        _drag_last_xy = None
+        _drag_start_cursor = None
+        _drag_start_position = None
+        _drag_last_position = None
         return
+
     window = _window()
-    final_xy = _drag_last_xy
+    final_position = _drag_last_position
     _drag_active = False
-    _drag_grab = None
-    _drag_last_xy = None
-    if window is None or final_xy is None:
+    _drag_start_cursor = None
+    _drag_start_position = None
+    _drag_last_position = None
+
+    if window is None or final_position is None:
         return
     try:
-        x, y = _config_from_position(window, final_xy[0], final_xy[1])
-        _move_window(window, x, y)
+        x, y = _config_from_pixel_position(window, final_position[0], final_position[1])
+        _move_window_pixels(window, x, y)
         _save_config()
         hc._logger.info('High Caliber position saved: x=%s y=%s',
                         hc._CONFIG.get('offsetX'), hc._CONFIG.get('offsetY'))
@@ -331,7 +366,7 @@ def _finish_drag():
 
 
 def _sample_input(mouse_move=False):
-    """Observe only Ctrl/LMB.  Never consumes or modifies the game's event."""
+    """Observe Ctrl/LMB only. Never consumes or alters the game's event."""
     global _gesture_latched
     try:
         ctrl = _ctrl_down_now()
@@ -343,21 +378,20 @@ def _sample_input(mouse_move=False):
         if gesture and not _gesture_latched:
             _gesture_latched = True
             if window is not None:
-                cursor = _cursor_logical(window)
-                if _cursor_on_panel(window, cursor):
-                    _start_drag(window, cursor)
+                cursor_pos = _cursor_pixels()
+                if _cursor_on_panel(window, cursor_pos):
+                    _start_drag(window, cursor_pos)
         elif not gesture and _gesture_latched:
             _gesture_latched = False
             _finish_drag()
 
         if mouse_move and gesture and _drag_active and window is not None:
-            _move_drag(window, _cursor_logical(window))
+            _move_drag(window, _cursor_pixels())
     except Exception:
         hc._logger.exception('High Caliber input sample failed')
 
 
 def _handle_gui_mouse_event(event):
-    # gui.g_mouseEventHandlers is an observer registry. False means unconsumed.
     _sample_input(mouse_move=True)
     return False
 
@@ -371,8 +405,6 @@ def _install_input():
     global _avatar_key_wrapper, _avatar_mouse_wrapper
     global _gui_mouse_installed, _fallback_input_installed
 
-    # WoT 2.4 central battle dispatchers. Wrappers always call the original
-    # first and preserve its return value; we only observe live key state.
     try:
         from AvatarInputHandler import AvatarInputHandler
 
@@ -406,7 +438,6 @@ def _install_input():
     except Exception:
         hc._logger.exception('Failed to hook AvatarInputHandler for High Caliber drag')
 
-    # Third WG-native observation point. This is a set, not a monkey patch.
     if not _gui_mouse_installed:
         try:
             from gui import g_mouseEventHandlers
@@ -415,8 +446,6 @@ def _install_input():
         except Exception:
             hc._logger.exception('Failed to join g_mouseEventHandlers for High Caliber drag')
 
-    # Fallback key edges for builds where AvatarInputHandler is instantiated
-    # through a path that bypasses the class method above. No timer/polling.
     if not _fallback_input_installed:
         try:
             import InputHandler
@@ -467,7 +496,6 @@ def _restore_input():
 
 
 def _model_init(self, properties=2, commands=1):
-    # Core owns payload + its compatibility command. We only add editing bool.
     ViewModel.__init__(self, properties=2, commands=1)
 
 
@@ -485,7 +513,6 @@ def _model_initialize(self):
 
 
 def _view_push(self):
-    # Data updates must never reposition or otherwise touch drag state.
     _orig_view_push(self)
     _push_edit_state()
 
@@ -520,7 +547,7 @@ def _install():
     hc.HighCaliberWindow._onReady = _window_ready
 
     _install_input()
-    hc._logger.info('High Caliber native event-driven Ctrl-drag installed')
+    hc._logger.info('High Caliber MainGun-style pixel Ctrl-drag installed')
     _installed = True
 
 
