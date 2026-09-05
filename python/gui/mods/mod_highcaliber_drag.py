@@ -367,6 +367,10 @@ def _set_editing(value):
     if not value:
         _drag_end()
     _editing = value
+    if _editing:
+        # Reassert only our own window when OUR Ctrl edit mode starts.
+        # Unrelated HUD changes are never observed or handled.
+        _apply_saved_position()
     hc._logger.info('High Caliber edit mode: %s', _editing)
     _push_edit_state()
 
