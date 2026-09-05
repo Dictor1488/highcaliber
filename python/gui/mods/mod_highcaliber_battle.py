@@ -59,14 +59,10 @@ def _set_view_components(self, *args, **kwargs):
         if total > 0:
             hc._STATE.setTotalEnemyHP(total)
 
-        # Important: create the UI manager regardless of whether HP was obtained
-        # immediately. Its own loader waits until the real battle UI is ready.
         hc._listener = hc.HighCaliberBattleListener()
 
         if total > 0:
             hc._push_ui()
-            hc._logger.info('High Caliber battle UI started; totalEnemyHP=%s required=%s',
-                            hc._STATE.totalEnemyHP, hc._STATE.requiredDamage)
         else:
             hc._logger.warning('High Caliber battle UI started without enemy HP; waiting for fallback data')
     except Exception:
@@ -74,15 +70,12 @@ def _set_view_components(self, *args, **kwargs):
     return result
 
 
-# mod_highcaliber.py installs an older wrapper first; replace it with the 2.4-safe
-# one after import. This module name sorts after mod_highcaliber.py and before the
-# drag helper, so all later helpers see the corrected battle hook.
 BattleFieldCtrl.setViewComponents = _set_view_components
 hc._set_view_components = _set_view_components
 
 
 def init():
-    hc._logger.info('High Caliber WoT 2.4 battle lifecycle fix installed')
+    pass
 
 
 def fini():
