@@ -64,6 +64,7 @@
         resizeSurface();
 
         var state = payload.state || {};
+        var l10n = payload.l10n || {};
         var visible = payload.visible === true;
         var editing = payload.editing === true;
         var obtained = !!state.mainGunObtained;
@@ -77,10 +78,10 @@
         if (!valueEl) return;
 
         if (obtained) {
-            valueEl.textContent = 'Done!';
+            valueEl.textContent = l10n.done || 'Done!';
             valueEl.style.color = '#60FF00';
         } else if (failed) {
-            valueEl.textContent = 'Wasted!';
+            valueEl.textContent = l10n.wasted || 'Wasted!';
             valueEl.style.color = '#FE0E00';
         } else {
             valueEl.textContent = String(remaining);
