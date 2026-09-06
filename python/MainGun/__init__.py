@@ -2,6 +2,7 @@ from .utils import logger
 from .battle_state_events import g_battleStateEvents
 from .views import MainGunPanel, registerGamefaceComponents, unregisterGamefaceComponents
 from . import damage_tracker
+from . import i18n_runtime
 
 __all__ = ('initialize', 'finalize')
 
@@ -11,6 +12,7 @@ g_mainGunPanel = None
 def initialize():
     global g_mainGunPanel
     try:
+        i18n_runtime.install()
         registerGamefaceComponents()
         if g_mainGunPanel is None:
             g_mainGunPanel = MainGunPanel()
