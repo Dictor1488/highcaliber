@@ -1,34 +1,26 @@
 # -*- coding: utf-8 -*-
 """WoT 2.4 battle integration for INQ High Caliber.
 
-This module owns the battle-shell specific pieces:
-- WoT 2.4 BattleFieldCtrl lifecycle compatibility;
-- the intentional WINDOW/layer-7 host;
-- clean suppression while WG battle overlays are open.
-
-TAB/N/B are treated as hold-style battle overlays: High Caliber is hidden for
-exactly as long as one of those keys is physically down. Persistent Wulf
-windows are tracked independently until their destroy(). No cursor polling,
-no timers and no toggle auto-close state are used.
+The High Caliber GameFace surface is a passive WindowLayer.VIEW surface owned
+by the battle main window. The 150x40 indicator is positioned inside that
+surface by JS; the Wulf window itself is never resized or dragged.
 """
 
 import BigWorld
 
-from frameworks.wulf import WindowFlags, WindowLayer
 from gui.battle_control.controllers.battle_field_ctrl import BattleFieldCtrl
-from gui.impl.pub import WindowImpl
 from gui.mods import mod_highcaliber as hc
 
 
-# -----------------------------------------------------------------------------
-# Battle lifecycle (WoT 2.4)
-# -----------------------------------------------------------------------------
-
 _base_set_view_components = hc._orig_setViewComponents
+_base_view_push = hc.HighCaliberView.push
+_avatar_key_original = None
+_avatar_key_wrapper = None
+_key_blocked = False
+_last_hidden = None
 
 
 def _fallback_total_enemy_hp():
-    """Best-effort fallback when BattleFieldCtrl private total is unavailable."""
     try:
         player = BigWorld.player()
         arena = getattr(player, 'arena', None)
@@ -51,17 +43,21 @@ def _fallback_total_enemy_hp():
         return 0
 
 
+def _destroy_listener():
+    listener = hc._listener
+    if listener is None:
+        return
+    try:
+        listener.destroy()
+    except Exception:
+        hc._logger.exception('Failed to destroy High Caliber battle listener')
+    hc._listener = None
+
+
 def _set_view_components(self, *args, **kwargs):
-    """Start a fresh High Caliber battle UI without obsolete listener APIs."""
     result = _base_set_view_components(self, *args, **kwargs)
     try:
-        if hc._listener is not None:
-            try:
-                hc._listener.destroy()
-            except Exception:
-                pass
-            hc._listener = None
-
+        _destroy_listener()
         hc._STATE.reset()
         _reset_overlay_state()
 
@@ -86,61 +82,6 @@ BattleFieldCtrl.setViewComponents = _set_view_components
 hc._set_view_components = _set_view_components
 
 
-# -----------------------------------------------------------------------------
-# Intentional layer 7
-# -----------------------------------------------------------------------------
-
-_base_window_init = hc.HighCaliberWindow.__init__
-
-
-def _highcaliber_window_init(self, parent=None):
-    WindowImpl.__init__(
-        self,
-        WindowFlags.WINDOW,
-        content=hc.HighCaliberView(),
-        layer=getattr(WindowLayer, 'WINDOW', WindowLayer.OVERLAY),
-        name='INQHighCaliber',
-        parent=parent
-    )
-
-
-hc.HighCaliberWindow.__init__ = _highcaliber_window_init
-
-
-# -----------------------------------------------------------------------------
-# Overlay visibility
-# -----------------------------------------------------------------------------
-
-_blocking_windows = {}
-_key_blocked = False
-_last_hidden = None
-
-_base_view_push = hc.HighCaliberView.push
-_base_wulf_load = WindowImpl.load
-_base_wulf_destroy = WindowImpl.destroy
-
-_avatar_key_original = None
-_avatar_key_wrapper = None
-
-# Narrow names only. Passive mod windows on layer 7 must not hide High Caliber.
-_BLOCKER_TOKENS = (
-    'prebattlehighlights',
-    'ingamemenu',
-    'fullstats',
-    'battlefullstats',
-    'battlemission',
-    'battlequest',
-    'personalmission',
-    'missionwindow',
-    'missionswindow',
-    'questwindow',
-    'questswindow',
-    'reservewindow',
-    'reserveswindow',
-    'battlepasswindow',
-)
-
-
 def _battle_active():
     try:
         return getattr(BigWorld.player(), 'arena', None) is not None
@@ -148,126 +89,66 @@ def _battle_active():
         return False
 
 
-def _window_text(window):
-    parts = []
-    try:
-        parts.append(window.__class__.__name__)
-    except Exception:
-        pass
-    try:
-        content = getattr(window, 'content', None)
-        if content is not None:
-            parts.append(content.__class__.__name__)
-    except Exception:
-        pass
-    try:
-        parts.append(repr(window))
-    except Exception:
-        pass
-    try:
-        return ' '.join(parts).lower()
-    except Exception:
-        return ''
-
-
-def _is_highcaliber_window(window):
-    try:
-        return isinstance(window, hc.HighCaliberWindow)
-    except Exception:
-        try:
-            return window.__class__.__name__ == 'HighCaliberWindow'
-        except Exception:
-            return False
-
-
-def _is_blocker(window):
-    if not _battle_active() or _is_highcaliber_window(window):
-        return False
-    text = _window_text(window)
-    for token in _BLOCKER_TOKENS:
-        if token in text:
-            return True
-    return False
-
-
 def _overlay_keys_down():
-    """Return True while TAB, N or B is physically held."""
     try:
         import Keys
-        for code in (
-                getattr(Keys, 'KEY_TAB', None),
-                getattr(Keys, 'KEY_N', None),
-                getattr(Keys, 'KEY_B', None)):
-            if code is None:
-                continue
-            try:
-                if BigWorld.isKeyDown(code):
-                    return True
-            except Exception:
-                pass
+        for code in (getattr(Keys, 'KEY_TAB', None),
+                     getattr(Keys, 'KEY_N', None),
+                     getattr(Keys, 'KEY_B', None)):
+            if code is not None and BigWorld.isKeyDown(code):
+                return True
     except Exception:
         pass
     return False
 
 
-def _suppressed():
-    return bool(_blocking_windows or _key_blocked)
-
-
-def _listener_parts():
+def _listener_view():
     try:
         listener = hc._listener
         if listener is None:
-            return None, None
-        return listener.window, listener.view
+            return None
+        view = listener.view
+        if view is None or getattr(view, 'viewModel', None) is None:
+            return None
+        return view
     except Exception:
-        return None, None
+        return None
 
 
 def _apply_visibility(reason='', force=False):
-    """Hide/show the Wulf window itself and avoid redundant visibility churn."""
     global _last_hidden
-
-    window, view = _listener_parts()
-    if window is None or view is None:
+    view = _listener_view()
+    if view is None:
         return
 
-    hidden = _suppressed()
+    hidden = bool(_key_blocked)
     if not force and hidden == _last_hidden:
         return
 
     try:
         if hidden:
-            try:
-                view.hide()
-            except Exception:
-                pass
-            try:
-                window.hide()
-            except Exception:
-                pass
+            view.hide()
         else:
-            try:
-                window.show(focus=False)
-            except Exception:
-                pass
             _base_view_push(view)
-
         _last_hidden = hidden
-        hc._logger.info(
-            'High Caliber overlay visibility: hidden=%s reason=%s',
-            hidden, reason)
+        hc._logger.info('High Caliber overlay visibility: hidden=%s reason=%s',
+                        hidden, reason)
     except Exception:
-        hc._logger.exception('Failed to update High Caliber overlay visibility')
+        # A view may be destroyed in the same frame that an input event arrives.
+        # Treat that as normal lifecycle churn, not an actionable mod error.
+        if _battle_active():
+            hc._logger.exception('Failed to update High Caliber overlay visibility')
 
 
 def _guarded_view_push(self):
-    """Damage/state updates must never resurrect the panel under a WG overlay."""
-    if _suppressed():
+    if _key_blocked:
         try:
-            self.hide()
+            if getattr(self, 'viewModel', None) is not None:
+                self.hide()
         except Exception:
             pass
+        return
+    if getattr(self, 'viewModel', None) is None:
         return
     return _base_view_push(self)
 
@@ -275,45 +156,16 @@ def _guarded_view_push(self):
 hc.HighCaliberView.push = _guarded_view_push
 
 
-def _wulf_load(self, *args, **kwargs):
-    result = _base_wulf_load(self, *args, **kwargs)
-    try:
-        if _is_blocker(self):
-            label = _window_text(self)
-            _blocking_windows[id(self)] = label
-            _apply_visibility('wulf-open:' + label)
-        elif _is_highcaliber_window(self):
-            _apply_visibility('highcaliber-load', force=True)
-    except Exception:
-        hc._logger.exception('High Caliber Wulf overlay load hook failed')
-    return result
-
-
-def _wulf_destroy(self, *args, **kwargs):
-    key = id(self)
-    was_blocker = key in _blocking_windows
-    try:
-        return _base_wulf_destroy(self, *args, **kwargs)
-    finally:
-        if was_blocker:
-            try:
-                label = _blocking_windows.pop(key, '')
-                _apply_visibility('wulf-close:' + label)
-            except Exception:
-                hc._logger.exception('High Caliber Wulf overlay destroy hook failed')
-
-
-WindowImpl.load = _wulf_load
-WindowImpl.destroy = _wulf_destroy
-
-
 def _sample_overlay_keys():
     global _key_blocked
+    if not _battle_active():
+        if _key_blocked:
+            _key_blocked = False
+        return
 
     blocked = _overlay_keys_down()
     if blocked == _key_blocked:
         return
-
     _key_blocked = blocked
     _apply_visibility('TAB/N/B-down=%s' % blocked)
 
@@ -325,6 +177,7 @@ def _install_key_hook():
     try:
         from AvatarInputHandler import AvatarInputHandler
         original = AvatarInputHandler.handleKeyEvent
+        original = getattr(original, '_inq_hc_battle_original', original)
 
         def _key_wrapper(self, *args, **kwargs):
             result = original(self, *args, **kwargs)
@@ -345,7 +198,6 @@ def _install_key_hook():
 
 def _reset_overlay_state():
     global _key_blocked, _last_hidden
-    _blocking_windows.clear()
     _key_blocked = False
     _last_hidden = None
 
@@ -353,7 +205,7 @@ def _reset_overlay_state():
 def init():
     _install_key_hook()
     hc._logger.info(
-        'High Caliber WoT 2.4 battle integration installed (WINDOW layer 7, clean overlay suppression)')
+        'High Caliber WoT 2.4 battle integration installed (passive VIEW host, no global Wulf hooks)')
 
 
 def fini():
@@ -371,4 +223,8 @@ def fini():
 
 
 def onDisconnected():
+    _reset_overlay_state()
+
+
+def onAccountBecomeNonPlayer():
     _reset_overlay_state()
