@@ -6,7 +6,7 @@ on:
       version:
         description: "Package version (leave empty for automatic)"
         required: false
-        default: "0.1.0"
+        default: "0.2.0"
 
 concurrency:
   group: highcaliber-build-${{ github.ref }}
@@ -29,9 +29,9 @@ jobs:
 
       - name: Validate sources
         run: |
-          node --check resources/in/gui/gameface/mods/highcaliber/HighCaliber/HighCaliber.js
+          node --check resources/in/gui/gameface/mods/inq/highcaliber/HighCaliberBattle.js
           python -m json.tool build.json >/dev/null
-          python -m json.tool resources/in/mods/configs/res_map/highcaliber_gameface.json >/dev/null
+          python -m json.tool resources/in/mods/configs/res_map/inq.highcaliber.json >/dev/null
 
       - name: Resolve version
         shell: bash
