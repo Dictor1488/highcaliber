@@ -29,9 +29,9 @@ jobs:
 
       - name: Validate sources
         run: |
-          node --check resources/in/gui/gameface/mods/inq/highcaliber/HighCaliberBattle.js
+          node --check resources/in/gui/gameface/mods/under_pressure/MainGunPanel/MainGunBattle.js
           python -m json.tool build.json >/dev/null
-          python -m json.tool resources/in/mods/configs/res_map/inq.highcaliber.json >/dev/null
+          python -m json.tool resources/in/mods/configs/res_map/under_pressure.maingun.json >/dev/null
 
       - name: Resolve version
         shell: bash
