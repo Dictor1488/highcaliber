@@ -3,13 +3,11 @@ import { ModelObserver } from "../../libs/model.js";
 const observer = ModelObserver();
 const BASE_WIDTH = 150;
 const BASE_HEIGHT = 40;
-const POST_FALLBACK_REASSERT_MS = 2500;
 const root = document.getElementById('root');
 const value = document.getElementById('value');
 let currentCfg = {};
 let lastSurfaceKey = null;
 let lastEditing = null;
-let postFallbackTimer = null;
 
 function num(v, d) {
     v = Number(v);
@@ -33,9 +31,6 @@ function surfaceHeight() {
 }
 
 function collapseHitArea() {
-    /* High Caliber never needs GameFace mouse input. Drag is observed from
-       WoT's native battle input path, so keep this document click-through at
-       all times, including while Ctrl is held. */
     try {
         if (typeof viewEnv === 'undefined' || !viewEnv.setHitAreaPaddingsRem) return;
         const pad = Math.ceil(Math.max(surfaceWidth(), surfaceHeight()) / 2) + 8;
@@ -58,7 +53,10 @@ function resizeStableSurface(force) {
 
     let applied = false;
     try {
-        if (typeof viewEnv !== 'undefined' && viewEnv.resizeViewRem) {
+        if (w === BASE_WIDTH && h === BASE_HEIGHT &&
+            typeof window.__inqPrimeHighCaliberSurface === 'function') {
+            applied = !!window.__inqPrimeHighCaliberSurface();
+        } else if (typeof viewEnv !== 'undefined' && viewEnv.resizeViewRem) {
             viewEnv.resizeViewRem(w, h);
             applied = true;
         } else if (typeof viewEnv !== 'undefined' && viewEnv.resizeViewPx) {
@@ -67,9 +65,6 @@ function resizeStableSurface(force) {
         }
     } catch (e) {}
 
-    /* Only cache a successful native resize. Previously we cached the key even
-       when viewEnv was not available yet, which could suppress a later normal
-       render-time retry. */
     if (applied) lastSurfaceKey = key;
     collapseHitArea();
     return applied;
@@ -115,8 +110,9 @@ function renderModel(model) {
     }
 }
 
-/* Module-level retry. The HTML now performs the earliest possible bootstrap;
-   this covers the case where viewEnv only becomes available by module time. */
+/* The HTML has already registered the earliest possible engine.whenReady size
+   callback. This call is only a module-time reinforcement, not the primary
+   startup handshake. */
 resizeStableSurface(true);
 
 engine.whenReady.then(function () {
@@ -124,13 +120,4 @@ engine.whenReady.then(function () {
     observer.onUpdate(renderModel);
     observer.subscribe();
     renderModel(observer.model);
-
-    /* WoT 2.4 can still apply its own 256x256 fallback after the first native
-       resize on some GameFace startup paths. Reassert exactly once after that
-       window. This is not polling and has no per-frame cost. */
-    if (postFallbackTimer !== null) window.clearTimeout(postFallbackTimer);
-    postFallbackTimer = window.setTimeout(function () {
-        postFallbackTimer = null;
-        resizeStableSurface(true);
-    }, POST_FALLBACK_REASSERT_MS);
 });
