@@ -1,8 +1,0 @@
-[
-  {
-    "itemID": "mods/highcaliber/HighCaliberBattle/layoutID",
-    "type": "Layout",
-    "path": "coui://gui/gameface/mods/highcaliber/HighCaliber/HighCaliberBattle.html",
-    "parameters": { "extension": "", "entrance": "HighCaliberBattle", "impl": "gameface" }
-  }
-]
