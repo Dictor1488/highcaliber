@@ -22,6 +22,7 @@ _avatar_key_original = None
 _avatar_key_wrapper = None
 _key_blocked = False
 _last_hidden = None
+_last_window_position = None
 
 _BASE_WIDTH = 150.0
 _BASE_HEIGHT = 40.0
@@ -59,6 +60,7 @@ def _fallback_total_enemy_hp():
 
 
 def _destroy_listener():
+    global _last_window_position
     listener = hc._listener
     if listener is None:
         return
@@ -67,6 +69,7 @@ def _destroy_listener():
     except Exception:
         hc._logger.exception('Failed to destroy High Caliber battle listener')
     hc._listener = None
+    _last_window_position = None
 
 
 def _set_view_components(self, *args, **kwargs):
@@ -157,6 +160,7 @@ def _config_scale():
 
 
 def _position_window(window=None):
+    global _last_window_position
     try:
         if window is None:
             listener = hc._listener
@@ -179,7 +183,13 @@ def _position_window(window=None):
         y = oy
         x = max(0.0, min(x, max(0.0, parent_w - panel_w)))
         y = max(0.0, min(y, max(0.0, parent_h - panel_h)))
-        window.move(int(round(x)), int(round(y)))
+        ix = int(round(x))
+        iy = int(round(y))
+        position_key = (id(window), ix, iy)
+        if _last_window_position == position_key:
+            return
+        window.move(ix, iy)
+        _last_window_position = position_key
     except Exception:
         if _battle_active():
             hc._logger.exception('Failed to position High Caliber window')
@@ -312,9 +322,10 @@ def _install_key_hook():
 
 
 def _reset_overlay_state():
-    global _key_blocked, _last_hidden
+    global _key_blocked, _last_hidden, _last_window_position
     _key_blocked = False
     _last_hidden = None
+    _last_window_position = None
 
 
 def init():
