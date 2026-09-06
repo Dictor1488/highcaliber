@@ -136,6 +136,7 @@ class MainGunPanel(object):
         self._isInitialized = False
         self._isVisible = False
         self._extendedInfo = False
+        self._ctrlDown = False
         self._displayMode = g_configFile.displayMode
         self._state = self._defaultState()
         self._offset = list(g_configFile.panelOffset)
@@ -169,6 +170,7 @@ class MainGunPanel(object):
             return
         self._destroyed = False
         self._nativeReady = False
+        self._ctrlDown = False
         self._calculateScaleFactor()
         self._syncPositionFromOffset()
         self._isVisible = g_battleStateEvents.visible
@@ -206,6 +208,7 @@ class MainGunPanel(object):
         self._state = self._defaultState()
         self._isVisible = False
         self._extendedInfo = False
+        self._ctrlDown = False
 
     def updateState(self, state):
         if state:
@@ -218,7 +221,7 @@ class MainGunPanel(object):
         self._destroyed = True
 
     def buildPayload(self):
-        return json.dumps({'visible': bool(self._isVisible), 'extendedInfo': bool(self._extendedInfo), 'displayMode': int(self._displayMode), 'scale': self._scaleFactor, 'size': {'w': self._size[0], 'h': self._size[1]}, 'state': self._state, 'l10n': {'mainGun': getTranslation('mainGun')}}, ensure_ascii=False)
+        return json.dumps({'visible': bool(self._isVisible), 'extendedInfo': bool(self._extendedInfo), 'editing': bool(self._ctrlDown), 'displayMode': int(self._displayMode), 'scale': self._scaleFactor, 'size': {'w': self._size[0], 'h': self._size[1]}, 'state': self._state, 'l10n': {'mainGun': getTranslation('mainGun')}}, ensure_ascii=False)
 
     def _onViewCreated(self, model):
         self._model = model
@@ -430,15 +433,36 @@ class MainGunPanel(object):
         self._cursorArmed = False
         self._dragStartCursor = None
         self._dragStartPosition = None
+        self._ctrlDown = False
+
+    def _isCtrlDown(self):
+        for keyName in ('KEY_LCONTROL', 'KEY_RCONTROL', 'KEY_LCTRL', 'KEY_RCTRL', 'KEY_CONTROL'):
+            key = getattr(Keys, keyName, None)
+            if key is not None:
+                try:
+                    if BigWorld.isKeyDown(key):
+                        return True
+                except Exception:
+                    pass
+        return False
+
+    def _syncCtrlState(self):
+        ctrlDown = self._isCtrlDown()
+        if ctrlDown != self._ctrlDown:
+            self._ctrlDown = ctrlDown
+            self.publish()
 
     def _dragTickDelay(self):
         if self._dragging:
             return DRAG_TICK_ACTIVE
-        return DRAG_TICK_ARMED if self._cursorArmed else DRAG_TICK_IDLE
+        if self._ctrlDown or self._cursorArmed:
+            return DRAG_TICK_ARMED
+        return DRAG_TICK_IDLE
 
     def _updateDragState(self):
         self._dragCallbackID = None
         if self._isInitialized and self._window is not None:
+            self._syncCtrlState()
             self._handleMouseDrag()
             self._dragCallbackID = BigWorld.callback(self._dragTickDelay(), self._updateDragState)
 
@@ -447,7 +471,7 @@ class MainGunPanel(object):
             self._cursorArmed = False; return
         cursor = GUI.mcursor()
         mouseDown = BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE)
-        usable = bool(cursor.visible and cursor.inWindow and cursor.inFocus and self._isVisible)
+        usable = bool(self._ctrlDown and cursor.visible and cursor.inWindow and cursor.inFocus and self._isVisible)
         self._cursorArmed = usable
         if not usable:
             if self._dragging: self._finishDrag()
