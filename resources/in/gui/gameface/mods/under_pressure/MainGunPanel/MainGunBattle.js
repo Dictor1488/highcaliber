@@ -68,7 +68,7 @@
         var visible = payload.visible === true;
         var editing = payload.editing === true;
         var obtained = !!state.mainGunObtained;
-        var failed = (!!state.failed || !!state.playerDead) && !obtained;
+        var failed = !!state.failed && !obtained;
         var remaining = Math.max(0, parseInt(state.remaining, 10) || 0);
 
         if (root) {
