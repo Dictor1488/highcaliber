@@ -1,8 +1,30 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" style="visibility:hidden">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    html, body {
+      width: 150px !important;
+      min-width: 150px !important;
+      max-width: 150px !important;
+      height: 40px !important;
+      min-height: 40px !important;
+      max-height: 40px !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      overflow: visible !important;
+      background: transparent !important;
+    }
+    #root {
+      width: 150px !important;
+      height: 40px !important;
+      min-width: 150px !important;
+      min-height: 40px !important;
+      max-width: 150px !important;
+      max-height: 40px !important;
+    }
+  </style>
   <link rel="stylesheet" href="HighCaliber.css">
 </head>
 <body>
@@ -10,6 +32,38 @@
     <img id="icon" src="coui://gui/maps/icons/achievement/mainGun.png" alt="">
     <div id="value">0</div>
   </div>
+
+  <script>
+    (function () {
+      function primeSurfaceSize() {
+        try {
+          if (typeof viewEnv === 'undefined') return false;
+          if (viewEnv.resizeViewRem) {
+            viewEnv.resizeViewRem(150, 40);
+            return true;
+          }
+          if (viewEnv.resizeViewPx) {
+            viewEnv.resizeViewPx(150, 40);
+            return true;
+          }
+        } catch (e) {}
+        return false;
+      }
+
+      window.__inqHighCaliberPrimeSurface = primeSurfaceSize;
+      primeSurfaceSize();
+
+      if (typeof engine !== 'undefined' && engine.whenReady) {
+        engine.whenReady.then(function () {
+          primeSurfaceSize();
+          document.documentElement.style.visibility = 'visible';
+        });
+      } else {
+        document.documentElement.style.visibility = 'visible';
+      }
+    })();
+  </script>
+
   <script type="module" src="HighCaliber.js"></script>
 </body>
 </html>
