@@ -4,47 +4,6 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="HighCaliber.css">
-  <script>
-    /*
-     * Register the native-size handshake while the document is still parsing.
-     *
-     * A one-shot call here is not enough: on WoT 2.4 viewEnv can appear only
-     * when engine.whenReady resolves, while the ES-module below may still be
-     * waiting on model.js. Registering this callback before module resolution
-     * removes that race and gives GameFace the fixed 150x40 size at the first
-     * moment its native bridge is usable.
-     */
-    (function () {
-      function primeHighCaliberSurface() {
-        try {
-          if (typeof viewEnv === 'undefined') return false;
-          if (viewEnv.resizeViewRem) {
-            viewEnv.resizeViewRem(150, 40);
-            return true;
-          }
-          if (viewEnv.resizeViewPx) {
-            viewEnv.resizeViewPx(150, 40);
-            return true;
-          }
-        } catch (e) {}
-        return false;
-      }
-
-      window.__inqPrimeHighCaliberSurface = primeHighCaliberSurface;
-
-      /* Works on startup paths where viewEnv already exists during parsing. */
-      primeHighCaliberSurface();
-
-      /* Critical path: subscribe before HighCaliber.js/model.js are resolved. */
-      try {
-        if (typeof engine !== 'undefined' && engine.whenReady && engine.whenReady.then) {
-          engine.whenReady.then(function () {
-            primeHighCaliberSurface();
-          });
-        }
-      } catch (e) {}
-    })();
-  </script>
 </head>
 <body>
   <div id="root" class="hidden">
