@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 """WoT 2.4 battle integration for INQ High Caliber.
 
-High Caliber is intentionally hosted on WindowLayer.WINDOW (layer 7) from the
-moment its Wulf window is created.  The GameFace surface itself remains passive:
-the indicator is positioned inside the surface by JS and there are no global
-WindowImpl load/destroy hooks or runtime layer swaps.
+High Caliber is hosted on WindowLayer.WINDOW (layer 7) from creation. The
+native 150x40 window owns placement; GameFace only renders the local indicator.
+The overlay is enabled only in standard random battles.
 """
 
 import BigWorld
+import GUI
 
-from frameworks.wulf import WindowFlags, WindowLayer
+from constants import ARENA_BONUS_TYPE
+from frameworks.wulf import WindowFlags, WindowLayer, WindowStatus
 from gui.battle_control.controllers.battle_field_ctrl import BattleFieldCtrl
 from gui.impl.pub import WindowImpl
 from gui.mods import mod_highcaliber as hc
@@ -21,6 +22,17 @@ _avatar_key_original = None
 _avatar_key_wrapper = None
 _key_blocked = False
 _last_hidden = None
+
+_BASE_WIDTH = 150.0
+_BASE_HEIGHT = 40.0
+
+
+def _is_random_battle():
+    try:
+        arena = getattr(BigWorld.player(), 'arena', None)
+        return arena is not None and getattr(arena, 'bonusType', None) == ARENA_BONUS_TYPE.REGULAR
+    except Exception:
+        return False
 
 
 def _fallback_total_enemy_hp():
@@ -64,6 +76,10 @@ def _set_view_components(self, *args, **kwargs):
         hc._STATE.reset()
         _reset_overlay_state()
 
+        if not _is_random_battle():
+            hc._logger.info('High Caliber disabled for non-random battle')
+            return result
+
         total = int(getattr(self, '_BattleFieldCtrl__totalEnemiesHealth', 0) or 0)
         if total <= 0:
             total = _fallback_total_enemy_hp()
@@ -86,12 +102,11 @@ hc._set_view_components = _set_view_components
 
 
 # -----------------------------------------------------------------------------
-# Stable layer-7 host
+# Stable layer-7 host and placement
 # -----------------------------------------------------------------------------
 
 
 def _highcaliber_window_init(self, parent=None):
-    """Create High Caliber directly on layer 7; never migrate it later."""
     WindowImpl.__init__(
         self,
         WindowFlags.WINDOW,
@@ -105,11 +120,81 @@ def _highcaliber_window_init(self, parent=None):
 hc.HighCaliberWindow.__init__ = _highcaliber_window_init
 
 
-def _battle_active():
+def _pair(value):
+    if value is None:
+        return None
     try:
-        return getattr(BigWorld.player(), 'arena', None) is not None
+        return float(value.x), float(value.y)
     except Exception:
-        return False
+        try:
+            return float(value[0]), float(value[1])
+        except Exception:
+            return None
+
+
+def _logical_size(window):
+    try:
+        size = _pair(getattr(getattr(window, 'parent', None), 'size', None))
+        if size is not None and size[0] > 0 and size[1] > 0:
+            return size
+    except Exception:
+        pass
+    try:
+        w, h = GUI.screenResolution()[:2]
+        if w > 0 and h > 0:
+            return float(w), float(h)
+    except Exception:
+        pass
+    return 1920.0, 1080.0
+
+
+def _config_scale():
+    try:
+        scale = float(hc._CONFIG.get('scale', 1.0) or 1.0)
+    except Exception:
+        scale = 1.0
+    return max(0.5, min(2.0, scale))
+
+
+def _position_window(window=None):
+    try:
+        if window is None:
+            listener = hc._listener
+            window = None if listener is None else listener.window
+        if window is None or getattr(window, 'content', None) is None:
+            return
+        parent_w, parent_h = _logical_size(window)
+        scale = _config_scale()
+        panel_w = _BASE_WIDTH * scale
+        panel_h = _BASE_HEIGHT * scale
+        try:
+            ox = float(hc._CONFIG.get('offsetX', 380) or 0)
+        except Exception:
+            ox = 380.0
+        try:
+            oy = float(hc._CONFIG.get('offsetY', 0) or 0)
+        except Exception:
+            oy = 0.0
+        x = (parent_w - panel_w) * 0.5 + ox
+        y = oy
+        x = max(0.0, min(x, max(0.0, parent_w - panel_w)))
+        y = max(0.0, min(y, max(0.0, parent_h - panel_h)))
+        window.move(int(round(x)), int(round(y)))
+    except Exception:
+        if _battle_active():
+            hc._logger.exception('Failed to position High Caliber window')
+
+
+def _highcaliber_window_ready(self):
+    self.show(focus=False)
+    _position_window(self)
+
+
+hc.HighCaliberWindow._onReady = _highcaliber_window_ready
+
+
+def _battle_active():
+    return _is_random_battle()
 
 
 def _overlay_keys_down():
@@ -152,6 +237,7 @@ def _apply_visibility(reason='', force=False):
         if hidden:
             view.hide()
         else:
+            _position_window()
             _base_view_push(view)
         _last_hidden = hidden
         hc._logger.info('High Caliber overlay visibility: hidden=%s reason=%s',
@@ -162,6 +248,13 @@ def _apply_visibility(reason='', force=False):
 
 
 def _guarded_view_push(self):
+    if not _battle_active():
+        try:
+            if getattr(self, 'viewModel', None) is not None:
+                self.hide()
+        except Exception:
+            pass
+        return
     if _key_blocked:
         try:
             if getattr(self, 'viewModel', None) is not None:
@@ -171,6 +264,7 @@ def _guarded_view_push(self):
         return
     if getattr(self, 'viewModel', None) is None:
         return
+    _position_window()
     return _base_view_push(self)
 
 
@@ -226,7 +320,7 @@ def _reset_overlay_state():
 def init():
     _install_key_hook()
     hc._logger.info(
-        'High Caliber WoT 2.4 battle integration installed (WINDOW layer 7 from creation, no global Wulf hooks)')
+        'High Caliber WoT 2.4 battle integration installed (random only, WINDOW layer 7, native placement)')
 
 
 def fini():
