@@ -65,11 +65,15 @@
 
         var state = payload.state || {};
         var visible = payload.visible === true;
+        var editing = payload.extendedInfo === true;
         var obtained = !!state.mainGunObtained;
         var failed = (!!state.failed || !!state.playerDead) && !obtained;
         var remaining = Math.max(0, parseInt(state.remaining, 10) || 0);
 
-        if (root) root.classList.toggle('main-gun-hidden', !visible);
+        if (root) {
+            root.classList.toggle('main-gun-hidden', !visible);
+            root.classList.toggle('main-gun-editing', editing && visible);
+        }
         if (!valueEl) return;
 
         if (obtained) {
