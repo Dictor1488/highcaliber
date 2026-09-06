@@ -2,19 +2,18 @@ html,
 body {
   margin: 0;
   padding: 0;
-  width: 150px;
-  min-width: 150px;
-  max-width: 150px;
-  height: 40px;
-  min-height: 40px;
-  max-height: 40px;
-  overflow: visible;
+  width: 100%;
+  height: 100%;
+  min-width: 100%;
+  min-height: 100%;
+  overflow: hidden;
   background: transparent;
+  pointer-events: none;
 }
 
 #root {
   position: absolute;
-  left: 0;
+  left: 50%;
   top: 0;
   width: 150px;
   height: 40px;
@@ -24,11 +23,11 @@ body {
   box-sizing: border-box;
   transform-origin: top left;
   background: transparent;
-  will-change: transform;
+  pointer-events: none;
+  will-change: transform, left, top;
 }
 
 #root.hidden {
-  /* Keep the document measurable while battle data is not ready. */
   visibility: hidden;
 }
 
@@ -64,5 +63,4 @@ body {
   box-shadow:
     inset 0 0 0 1px rgba(0, 0, 0, .55),
     0 0 3px rgba(0, 0, 0, .65);
-  cursor: move;
 }
