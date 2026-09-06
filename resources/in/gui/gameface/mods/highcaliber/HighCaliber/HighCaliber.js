@@ -3,11 +3,13 @@ import { ModelObserver } from "../../libs/model.js";
 const observer = ModelObserver();
 const BASE_WIDTH = 150;
 const BASE_HEIGHT = 40;
+const POST_FALLBACK_REASSERT_MS = 2500;
 const root = document.getElementById('root');
 const value = document.getElementById('value');
 let currentCfg = {};
 let lastSurfaceKey = null;
 let lastEditing = null;
+let postFallbackTimer = null;
 
 function num(v, d) {
     v = Number(v);
@@ -51,16 +53,26 @@ function resizeStableSurface(force) {
     const key = w + 'x' + h;
     if (!force && key === lastSurfaceKey) {
         collapseHitArea();
-        return;
+        return true;
     }
-    lastSurfaceKey = key;
+
+    let applied = false;
     try {
-        if (typeof viewEnv !== 'undefined' && viewEnv.resizeViewRem)
+        if (typeof viewEnv !== 'undefined' && viewEnv.resizeViewRem) {
             viewEnv.resizeViewRem(w, h);
-        else if (typeof viewEnv !== 'undefined' && viewEnv.resizeViewPx)
+            applied = true;
+        } else if (typeof viewEnv !== 'undefined' && viewEnv.resizeViewPx) {
             viewEnv.resizeViewPx(w, h);
+            applied = true;
+        }
     } catch (e) {}
+
+    /* Only cache a successful native resize. Previously we cached the key even
+       when viewEnv was not available yet, which could suppress a later normal
+       render-time retry. */
+    if (applied) lastSurfaceKey = key;
     collapseHitArea();
+    return applied;
 }
 
 function parsePayload(model) {
@@ -103,17 +115,22 @@ function renderModel(model) {
     }
 }
 
-/* Prime the native GameFace surface as soon as this module executes instead
-   of waiting for engine.whenReady. The CSS dimensions are already fixed, so
-   there is no reason to enter GameFace's automatic size-calculation path. */
+/* Module-level retry. The HTML now performs the earliest possible bootstrap;
+   this covers the case where viewEnv only becomes available by module time. */
 resizeStableSurface(true);
 
 engine.whenReady.then(function () {
-    /* Reassert once when the model bridge is ready in case viewEnv was not yet
-       exposed during module evaluation. This is a deterministic fallback, not
-       a delayed timer/poll. */
     resizeStableSurface(true);
     observer.onUpdate(renderModel);
     observer.subscribe();
     renderModel(observer.model);
+
+    /* WoT 2.4 can still apply its own 256x256 fallback after the first native
+       resize on some GameFace startup paths. Reassert exactly once after that
+       window. This is not polling and has no per-frame cost. */
+    if (postFallbackTimer !== null) window.clearTimeout(postFallbackTimer);
+    postFallbackTimer = window.setTimeout(function () {
+        postFallbackTimer = null;
+        resizeStableSurface(true);
+    }, POST_FALLBACK_REASSERT_MS);
 });
