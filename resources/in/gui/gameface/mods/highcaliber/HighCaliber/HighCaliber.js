@@ -6,7 +6,6 @@ const BASE_HEIGHT = 40;
 const root = document.getElementById('root');
 const value = document.getElementById('value');
 let currentCfg = {};
-let lastSurfaceKey = null;
 let lastEditing = null;
 
 function num(v, d) {
@@ -22,52 +21,18 @@ function uiScale() {
     return clamp(num(currentCfg.scale, 1), 0.5, 2.0);
 }
 
-function surfaceWidth() {
-    return Math.max(1, Math.ceil(BASE_WIDTH * uiScale()));
-}
-
-function surfaceHeight() {
-    return Math.max(1, Math.ceil(BASE_HEIGHT * uiScale()));
-}
-
 function collapseHitArea() {
+    /* The VIEW surface is intentionally passive/fullscreen. Native battle
+       input owns drag, so collapse GameFace hit testing over the whole view. */
     try {
         if (typeof viewEnv === 'undefined' || !viewEnv.setHitAreaPaddingsRem) return;
-        const pad = Math.ceil(Math.max(surfaceWidth(), surfaceHeight()) / 2) + 8;
+        const pad = Math.ceil(Math.max(window.innerWidth || 0, window.innerHeight || 0)) + 64;
         try {
             viewEnv.setHitAreaPaddingsRem(pad, pad, pad, pad, 15);
         } catch (e) {
             viewEnv.setHitAreaPaddingsRem(pad, pad, pad, pad);
         }
     } catch (e) {}
-}
-
-function resizeStableSurface(force) {
-    const w = surfaceWidth();
-    const h = surfaceHeight();
-    const key = w + 'x' + h;
-    if (!force && key === lastSurfaceKey) {
-        collapseHitArea();
-        return true;
-    }
-
-    let applied = false;
-    try {
-        if (w === BASE_WIDTH && h === BASE_HEIGHT &&
-            typeof window.__inqPrimeHighCaliberSurface === 'function') {
-            applied = !!window.__inqPrimeHighCaliberSurface();
-        } else if (typeof viewEnv !== 'undefined' && viewEnv.resizeViewRem) {
-            viewEnv.resizeViewRem(w, h);
-            applied = true;
-        } else if (typeof viewEnv !== 'undefined' && viewEnv.resizeViewPx) {
-            viewEnv.resizeViewPx(w, h);
-            applied = true;
-        }
-    } catch (e) {}
-
-    if (applied) lastSurfaceKey = key;
-    collapseHitArea();
-    return applied;
 }
 
 function parsePayload(model) {
@@ -77,19 +42,29 @@ function parsePayload(model) {
     return cfg;
 }
 
+function placeRoot() {
+    if (!root) return;
+    const scale = uiScale();
+    const offsetX = num(currentCfg.offsetX, 380);
+    const offsetY = num(currentCfg.offsetY, 0);
+
+    /* offsetX is stored relative to the centred scaled indicator. Keeping the
+       Wulf VIEW itself at 0,0 removes all native move/resize lifecycle races. */
+    root.style.left = 'calc(50% + ' + offsetX + 'px - ' + ((BASE_WIDTH * scale) / 2) + 'px)';
+    root.style.top = offsetY + 'px';
+    root.style.transform = 'scale(' + scale + ')';
+}
+
 function renderModel(model) {
     currentCfg = parsePayload(model);
     const visible = currentCfg.visible === true;
     const editing = visible && currentCfg.dragEnabled !== false && !!(model && model.editing);
-    const editChanged = lastEditing === null || editing !== lastEditing;
     lastEditing = editing;
 
-    resizeStableSurface(editChanged);
+    placeRoot();
+    collapseHitArea();
 
     if (root) {
-        root.style.left = '0px';
-        root.style.top = '0px';
-        root.style.transform = 'scale(' + uiScale() + ')';
         root.className = visible ? (editing ? 'editing' : '') : 'hidden';
     }
 
@@ -110,13 +85,8 @@ function renderModel(model) {
     }
 }
 
-/* The HTML has already registered the earliest possible engine.whenReady size
-   callback. This call is only a module-time reinforcement, not the primary
-   startup handshake. */
-resizeStableSurface(true);
-
 engine.whenReady.then(function () {
-    resizeStableSurface(true);
+    collapseHitArea();
     observer.onUpdate(renderModel);
     observer.subscribe();
     renderModel(observer.model);
