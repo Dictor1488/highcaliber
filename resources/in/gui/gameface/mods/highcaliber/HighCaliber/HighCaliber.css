@@ -2,10 +2,12 @@ html,
 body {
   margin: 0;
   padding: 0;
-  width: 150px;
-  height: 40px;
-  min-width: 150px;
-  min-height: 40px;
+  width: 450px;
+  height: 300px;
+  min-width: 450px;
+  min-height: 300px;
+  max-width: 450px;
+  max-height: 300px;
   overflow: visible;
   background: transparent;
   pointer-events: none;
