@@ -4,6 +4,10 @@ const observer = ModelObserver();
 const root = document.getElementById('root');
 const value = document.getElementById('value');
 let currentCfg = {};
+let lastScale = null;
+let lastClassName = null;
+let lastText = null;
+let lastColor = null;
 
 function num(v, d) {
     v = Number(v);
@@ -36,11 +40,34 @@ function parsePayload(model) {
     return cfg;
 }
 
-function placeRoot() {
+function updateGeometry() {
     if (!root) return;
+    const scale = uiScale();
+    if (scale === lastScale) return;
     root.style.left = '0px';
     root.style.top = '0px';
-    root.style.transform = 'scale(' + uiScale() + ')';
+    root.style.transform = 'scale(' + scale + ')';
+    lastScale = scale;
+}
+
+function updateVisibility(visible, editing) {
+    if (!root) return;
+    const className = visible ? (editing ? 'editing' : '') : 'hidden';
+    if (className === lastClassName) return;
+    root.className = className;
+    lastClassName = className;
+}
+
+function updateValue(text, color) {
+    if (!value) return;
+    if (color !== lastColor) {
+        value.style.color = color;
+        lastColor = color;
+    }
+    if (text !== lastText) {
+        value.textContent = text;
+        lastText = text;
+    }
 }
 
 function renderModel(model) {
@@ -48,31 +75,37 @@ function renderModel(model) {
     const visible = currentCfg.visible === true;
     const editing = visible && currentCfg.dragEnabled !== false && !!(model && model.editing);
 
-    placeRoot();
-    collapseHitArea();
-
-    if (root) {
-        root.className = visible ? (editing ? 'editing' : '') : 'hidden';
-    }
+    updateGeometry();
+    updateVisibility(visible, editing);
 
     if (!visible || !value) return;
 
     const status = String(currentCfg.status || 'progress');
+    let text;
+    let color;
+
     if (status === 'wasted') {
-        value.style.color = currentCfg.colorWasted || '#FE0E00';
-        value.textContent = currentCfg.showWastedText === false ?
+        color = currentCfg.colorWasted || '#FE0E00';
+        text = currentCfg.showWastedText === false ?
             String(Math.max(0, Math.round(num(currentCfg.remaining, 0)))) :
             String(currentCfg.wastedText || 'Wasted!');
     } else if (status === 'done') {
-        value.style.color = currentCfg.colorDone || '#60FF00';
-        value.textContent = currentCfg.showDoneText === false ? '0' : String(currentCfg.doneText || 'Done!');
+        color = currentCfg.colorDone || '#60FF00';
+        text = currentCfg.showDoneText === false ? '0' : String(currentCfg.doneText || 'Done!');
     } else {
-        value.style.color = currentCfg.colorProgress || '#F8F400';
-        value.textContent = String(Math.max(0, Math.round(num(currentCfg.remaining, 0))));
+        color = currentCfg.colorProgress || '#F8F400';
+        text = String(Math.max(0, Math.round(num(currentCfg.remaining, 0))));
     }
+
+    updateValue(text, color);
 }
 
 engine.whenReady.then(function () {
+    try {
+        if (window.__inqHighCaliberPrimeSurface) {
+            window.__inqHighCaliberPrimeSurface();
+        }
+    } catch (e) {}
     collapseHitArea();
     observer.onUpdate(renderModel);
     observer.subscribe();
