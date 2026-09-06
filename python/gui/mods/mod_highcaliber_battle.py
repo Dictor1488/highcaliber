@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 """WoT 2.4 battle integration for INQ High Caliber.
 
-The High Caliber GameFace surface is a passive WindowLayer.VIEW surface owned
-by the battle main window. The 150x40 indicator is positioned inside that
-surface by JS; the Wulf window itself is never resized or dragged.
+High Caliber is intentionally hosted on WindowLayer.WINDOW (layer 7) from the
+moment its Wulf window is created.  The GameFace surface itself remains passive:
+the indicator is positioned inside the surface by JS and there are no global
+WindowImpl load/destroy hooks or runtime layer swaps.
 """
 
 import BigWorld
 
+from frameworks.wulf import WindowFlags, WindowLayer
 from gui.battle_control.controllers.battle_field_ctrl import BattleFieldCtrl
+from gui.impl.pub import WindowImpl
 from gui.mods import mod_highcaliber as hc
 
 
@@ -82,6 +85,26 @@ BattleFieldCtrl.setViewComponents = _set_view_components
 hc._set_view_components = _set_view_components
 
 
+# -----------------------------------------------------------------------------
+# Stable layer-7 host
+# -----------------------------------------------------------------------------
+
+
+def _highcaliber_window_init(self, parent=None):
+    """Create High Caliber directly on layer 7; never migrate it later."""
+    WindowImpl.__init__(
+        self,
+        WindowFlags.WINDOW,
+        content=hc.HighCaliberView(),
+        layer=getattr(WindowLayer, 'WINDOW', WindowLayer.OVERLAY),
+        name='INQHighCaliber',
+        parent=parent
+    )
+
+
+hc.HighCaliberWindow.__init__ = _highcaliber_window_init
+
+
 def _battle_active():
     try:
         return getattr(BigWorld.player(), 'arena', None) is not None
@@ -134,8 +157,6 @@ def _apply_visibility(reason='', force=False):
         hc._logger.info('High Caliber overlay visibility: hidden=%s reason=%s',
                         hidden, reason)
     except Exception:
-        # A view may be destroyed in the same frame that an input event arrives.
-        # Treat that as normal lifecycle churn, not an actionable mod error.
         if _battle_active():
             hc._logger.exception('Failed to update High Caliber overlay visibility')
 
@@ -205,7 +226,7 @@ def _reset_overlay_state():
 def init():
     _install_key_hook()
     hc._logger.info(
-        'High Caliber WoT 2.4 battle integration installed (passive VIEW host, no global Wulf hooks)')
+        'High Caliber WoT 2.4 battle integration installed (WINDOW layer 7 from creation, no global Wulf hooks)')
 
 
 def fini():
