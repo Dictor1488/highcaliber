@@ -1,12 +1,9 @@
 import { ModelObserver } from "../../libs/model.js";
 
 const observer = ModelObserver();
-const BASE_WIDTH = 150;
-const BASE_HEIGHT = 40;
 const root = document.getElementById('root');
 const value = document.getElementById('value');
 let currentCfg = {};
-let lastEditing = null;
 
 function num(v, d) {
     v = Number(v);
@@ -22,15 +19,12 @@ function uiScale() {
 }
 
 function collapseHitArea() {
-    /* The VIEW surface is intentionally passive/fullscreen. Native battle
-       input owns drag, so collapse GameFace hit testing over the whole view. */
     try {
         if (typeof viewEnv === 'undefined' || !viewEnv.setHitAreaPaddingsRem) return;
-        const pad = Math.ceil(Math.max(window.innerWidth || 0, window.innerHeight || 0)) + 64;
         try {
-            viewEnv.setHitAreaPaddingsRem(pad, pad, pad, pad, 15);
+            viewEnv.setHitAreaPaddingsRem(0, 0, 0, 0, 15);
         } catch (e) {
-            viewEnv.setHitAreaPaddingsRem(pad, pad, pad, pad);
+            viewEnv.setHitAreaPaddingsRem(0, 0, 0, 0);
         }
     } catch (e) {}
 }
@@ -44,22 +38,15 @@ function parsePayload(model) {
 
 function placeRoot() {
     if (!root) return;
-    const scale = uiScale();
-    const offsetX = num(currentCfg.offsetX, 380);
-    const offsetY = num(currentCfg.offsetY, 0);
-
-    /* offsetX is stored relative to the centred scaled indicator. Keeping the
-       Wulf VIEW itself at 0,0 removes all native move/resize lifecycle races. */
-    root.style.left = 'calc(50% + ' + offsetX + 'px - ' + ((BASE_WIDTH * scale) / 2) + 'px)';
-    root.style.top = offsetY + 'px';
-    root.style.transform = 'scale(' + scale + ')';
+    root.style.left = '0px';
+    root.style.top = '0px';
+    root.style.transform = 'scale(' + uiScale() + ')';
 }
 
 function renderModel(model) {
     currentCfg = parsePayload(model);
     const visible = currentCfg.visible === true;
     const editing = visible && currentCfg.dragEnabled !== false && !!(model && model.editing);
-    lastEditing = editing;
 
     placeRoot();
     collapseHitArea();
