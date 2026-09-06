@@ -4,6 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="HighCaliber.css">
+  <script>
+    /* Push the fixed surface size during HTML parsing, before any module import.
+       This is deliberately earlier than engine.whenReady and earlier than
+       HighCaliber.js dependency resolution. */
+    (function () {
+      try {
+        if (typeof viewEnv !== 'undefined' && viewEnv.resizeViewRem)
+          viewEnv.resizeViewRem(150, 40);
+        else if (typeof viewEnv !== 'undefined' && viewEnv.resizeViewPx)
+          viewEnv.resizeViewPx(150, 40);
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
   <div id="root" class="hidden">
