@@ -1,0 +1,51 @@
+html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: transparent;
+    pointer-events: none;
+}
+
+#main-gun-root {
+    position: relative;
+    width: 150px;
+    height: 40px;
+    transform-origin: 0 0;
+    pointer-events: none;
+}
+
+#main-gun-root.main-gun-hidden {
+    visibility: hidden;
+}
+
+#main-gun-panel {
+    width: 150px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    box-sizing: border-box;
+    background: transparent;
+    pointer-events: none;
+}
+
+#main-gun-icon {
+    width: 40px;
+    height: 40px;
+    object-fit: contain;
+    flex: 0 0 40px;
+    filter: drop-shadow(1px 1px 5px rgba(0, 0, 0, .75));
+}
+
+#main-gun-remaining {
+    margin: 0;
+    padding: 0;
+    height: 40px;
+    line-height: 40px;
+    white-space: nowrap;
+    font-family: Arial, sans-serif;
+    font-size: 21px;
+    font-weight: 700;
+    color: #F8F400;
+    text-shadow: 1px 1px 5px rgba(0, 0, 0, .75), 0 0 2px rgba(0, 0, 0, .75);
+}
