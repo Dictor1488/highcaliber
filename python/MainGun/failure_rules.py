@@ -50,9 +50,9 @@ def install(damage_tracker):
         vehicle_cls = Vehicle.Vehicle
         original_show_damage_from_shot = vehicle_cls.showDamageFromShot
 
-        def _showDamageFromShot(vehicle, attackerID, points, effectsIndex,
-                                damageFactor, lastMaterialIsShield):
+        def _showDamageFromShot(vehicle, *args, **kwargs):
             try:
+                attackerID = args[0] if args else kwargs.get('attackerID')
                 tracker = damage_tracker.g_tracker
                 if tracker is not None and getattr(tracker, '_started', False):
                     playerID = tracker._playerVehicleID
@@ -68,14 +68,7 @@ def install(damage_tracker):
             except Exception:
                 pass
 
-            return original_show_damage_from_shot(
-                vehicle,
-                attackerID,
-                points,
-                effectsIndex,
-                damageFactor,
-                lastMaterialIsShield
-            )
+            return original_show_damage_from_shot(vehicle, *args, **kwargs)
 
         vehicle_cls.showDamageFromShot = _showDamageFromShot
         _vehicle_hook_installed = True
