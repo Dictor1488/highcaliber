@@ -1,16 +1,17 @@
 # -*- coding: utf-8 -*-
 """High Caliber failure display rules.
 
-The HUD must show Wasted only after the player actually damages an allied
-vehicle. Player death and an impossible remaining-HP situation do not change
-the HUD to Wasted.
+The HUD must show Wasted as soon as the player lands a direct shell hit on an
+allied vehicle. Player death and an impossible remaining-HP situation do not
+change the HUD to Wasted.
 """
 
 _installed = False
+_vehicle_hook_installed = False
 
 
 def install(damage_tracker):
-    global _installed
+    global _installed, _vehicle_hook_installed
     if _installed:
         return
 
@@ -18,7 +19,6 @@ def install(damage_tracker):
     original_init = cls.__init__
     original_start = cls._startBattleImpl
     original_stop = cls.stop
-    original_health = cls._onVehicleHealthChanged
 
     def _init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
@@ -32,31 +32,55 @@ def install(damage_tracker):
         self._teamDamageFailed = False
         return original_stop(self)
 
-    def _onVehicleHealthChanged(self, targetID, attackerID, damage):
-        try:
-            amount = int(damage or 0)
-        except Exception:
-            amount = 0
-
-        if amount > 0:
-            try:
-                playerID = self._playerVehicleID
-                isPlayer = playerID is not None and self._sameVehicle(attackerID, playerID)
-                isOtherAlly = (self._isAllyVehicle(targetID) and
-                               not self._sameVehicle(targetID, playerID))
-                if isPlayer and isOtherAlly and not self._teamDamageFailed:
-                    self._teamDamageFailed = True
-            except Exception:
-                pass
-
-        original_health(self, targetID, attackerID, damage)
-
     def _isFailed(self):
         return bool(getattr(self, '_teamDamageFailed', False))
 
     cls.__init__ = _init
     cls._startBattleImpl = _startBattleImpl
     cls.stop = _stop
-    cls._onVehicleHealthChanged = _onVehicleHealthChanged
     cls._isFailed = _isFailed
+
+    # Friendly fire in Random battles normally does not reduce allied HP, so
+    # arena.onVehicleHealthChanged is not a reliable signal. Hook the vehicle
+    # shell-impact callback instead: it contains both the target vehicle
+    # (self.id) and attackerID even when the hit deals 0 HP damage.
+    try:
+        import Vehicle
+
+        vehicle_cls = Vehicle.Vehicle
+        original_show_damage_from_shot = vehicle_cls.showDamageFromShot
+
+        def _showDamageFromShot(vehicle, attackerID, points, effectsIndex,
+                                damageFactor, lastMaterialIsShield):
+            try:
+                tracker = damage_tracker.g_tracker
+                if tracker is not None and getattr(tracker, '_started', False):
+                    playerID = tracker._playerVehicleID
+                    targetID = getattr(vehicle, 'id', None)
+                    isPlayerShot = (playerID is not None and
+                                    tracker._sameVehicle(attackerID, playerID))
+                    isOtherAlly = (targetID is not None and
+                                   not tracker._sameVehicle(targetID, playerID) and
+                                   tracker._isAllyVehicle(targetID))
+                    if isPlayerShot and isOtherAlly and not tracker._teamDamageFailed:
+                        tracker._teamDamageFailed = True
+                        tracker._invalidate()
+            except Exception:
+                pass
+
+            return original_show_damage_from_shot(
+                vehicle,
+                attackerID,
+                points,
+                effectsIndex,
+                damageFactor,
+                lastMaterialIsShield
+            )
+
+        vehicle_cls.showDamageFromShot = _showDamageFromShot
+        _vehicle_hook_installed = True
+    except Exception:
+        # Keep the mod functional even if WG changes the Vehicle class API.
+        _vehicle_hook_installed = False
+
     _installed = True
