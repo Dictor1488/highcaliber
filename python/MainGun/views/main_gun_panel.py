@@ -19,8 +19,7 @@ from ..settings import g_configFile, getTranslation
 from ..utils import logger, cancelCallbackSafe as _cancelCallbackSafe, screenResolution as _screenResolution, cursorPixels as _cursorPixels
 
 try:
-    import openwg_gameface
-    from openwg_gameface import ModDynAccessor, manager as gamefaceResMap, on_ready as gamefaceOnReady
+    from gui.impl.gen import R
     from frameworks.wulf import ViewFlags, ViewModel, ViewSettings, WindowFlags, WindowLayer, WindowStatus
     from gui.impl.gui_decorators import args2params
     from gui.impl.pub import ViewImpl, WindowImpl
@@ -28,8 +27,7 @@ try:
     from skeletons.gui.impl import IGuiLoader
     _GF_OK = True
 except Exception:
-    openwg_gameface = None
-    ModDynAccessor = gamefaceResMap = gamefaceOnReady = None
+    R = None
     ViewFlags = ViewModel = ViewSettings = WindowFlags = WindowLayer = WindowStatus = None
     ViewImpl = WindowImpl = args2params = None
     dependency = IGuiLoader = None
@@ -48,27 +46,17 @@ _gamefaceReadyHookBound = False
 def registerGamefaceComponents():
     global _gamefaceReadyHookBound
     if not _GF_OK:
-        logger.error('[HighCaliber] openwg_gameface is not installed; UI disabled')
-        return
-    if _gamefaceReadyHookBound:
+        logger.error('[HighCaliber] native Gameface UI is unavailable')
         return
     _gamefaceReadyHookBound = True
 
-    @gamefaceOnReady
-    def _onResMapReady():
-        try:
-            resolved = dict(openwg_gameface.res_ids_by_mask('mods/under_pressure/'))
-            logger.debug('[HighCaliber] res_map ready, %d layouts resolved', len(resolved))
-        except Exception:
-            logger.exception('[HighCaliber] res_map validation failed')
-
 
 def unregisterGamefaceComponents():
-    logger.debug('[HighCaliber] Gameface res_map unregistration')
+    logger.debug('[HighCaliber] native Gameface resources are client-managed')
 
 
 if _GF_OK:
-    _GF_LAYOUT = ModDynAccessor(LAYOUT_KEY)
+    _GF_LAYOUT = R.mods.dictor.highcaliber.MainGunBattle
 
     class _MainGunPanelModel(ViewModel):
         def __init__(self, payload):
@@ -272,15 +260,12 @@ class MainGunPanel(object):
         self._windowCallbackID = None
         if self._destroyed or self._window is not None:
             return
-        if not _GF_OK or gamefaceResMap is None:
-            logger.error('[HighCaliber] openwg_gameface is required')
+        if not _GF_OK:
+            logger.error('[HighCaliber] native Gameface UI is unavailable')
             return
         self._token += 1
         token = self._token
-        if getattr(gamefaceResMap, 'isResMapValidated', False):
-            self._loadWindow(token)
-        else:
-            gamefaceOnReady(lambda: self._loadWindow(token))
+        self._loadWindow(token)
 
     def _loadWindow(self, token, retry=0):
         self._windowCallbackID = None

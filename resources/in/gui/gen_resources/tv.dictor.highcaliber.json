@@ -1,0 +1,11 @@
+[
+    {
+        "type": "Layout",
+        "path": "coui://gui/gameface/mods/under_pressure/MainGunPanel/MainGunBattle.html",
+        "parameters": {
+            "entrance": "MainGunBattle",
+            "impl": "gameface"
+        },
+        "id": "R.mods.dictor.highcaliber.MainGunBattle"
+    }
+]
