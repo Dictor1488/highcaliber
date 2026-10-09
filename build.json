@@ -1,7 +1,7 @@
 {
   "info": {
     "id": "me.inq.highcaliber",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "name": "INQ High Caliber",
     "description": "High Caliber indicator using proven MainGun runtime"
   }
