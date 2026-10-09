@@ -6,7 +6,7 @@ on:
       version:
         description: "Package version (leave empty for automatic)"
         required: false
-        default: "0.2.0"
+        default: "0.2.1"
 
 concurrency:
   group: highcaliber-build-${{ github.ref }}
@@ -31,7 +31,7 @@ jobs:
         run: |
           node --check resources/in/gui/gameface/mods/under_pressure/MainGunPanel/MainGunBattle.js
           python -m json.tool build.json >/dev/null
-          python -m json.tool resources/in/mods/configs/res_map/under_pressure.maingun.json >/dev/null
+          python -m json.tool resources/in/gui/gen_resources/tv.dictor.highcaliber.json >/dev/null
 
       - name: Resolve version
         shell: bash
